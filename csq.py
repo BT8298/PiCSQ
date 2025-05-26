@@ -7,7 +7,7 @@ import re
 import serial
 import serial.tools.list_ports
 
-# Used in pretty-printing results for diagnosticTest()
+# Used in pretty-printing results for diagnostic_test()
 ws46_human_readable = (
     "CAT-M1",
     "NB-IoT",
@@ -31,7 +31,7 @@ class TelitME910G1:
     The modem is designed for LTE UE categories NB1/2 and M1.
     """
 
-    def __init__(self, baud=9600):
+    def __init__(self, baud=115200, timeout=3):
         """Autodetect the modem and set serial link parameters.
 
         The last modem found is initialized (we assume there is only one modem
@@ -51,18 +51,41 @@ class TelitME910G1:
             baudrate=baud,
             xonxoff=False,
             dsrdtr=True,
-            timeout=3
+            timeout=timeout
         )
 
     # The write and query functions do not actually "open" the serial device.
     # This logic needs to be implemented in routines which use these methods.
     def AT_write(self, AT_commandline):
-        """Send an AT command without listening for a response.
+        """Send an AT command and check for errors.
 
-        ATCommandline (str): the AT commandline to send, with no carriage
+        This method flushes the serial input buffer.
+
+        AT_commandline (str): the AT commandline to send, with no carriage
             return or linebreak.
         """
-        self.ser.write((AT_commandline+"\r").encode(encoding="ascii"))
+        self.ser.reset_input_buffer()
+        self.ser.write((AT_commandline+"\r").encode("ascii"))
+        response = bytearray()
+        while self.ser.in_waiting != 0:
+            try:
+                response.extend(self.ser.read(1))
+            except serial.SerialException:
+                raise RuntimeError("Failed to read from serial input buffer")
+
+        result_code = response.decode("ascii")
+        if "OK" in result_code:
+            return
+        elif "ERROR" in result_code:
+            err_msg = result_code.replace("\r\n", "")
+            raise RuntimeError(
+                f'Command "{AT_commandline}" resulted in error "{err_msg}"')
+        else:
+            raise RuntimeError(
+                'Modem did not send response to command '
+                f'"{AT_commandline}", '
+                'or there was an error reading it (a timeout?)'
+            )
 
     def AT_query(self, AT_commandline, custom_timeout=False):
         """Send an AT command and store the response.
@@ -73,13 +96,13 @@ class TelitME910G1:
         should result in a response similar to
         <CR><LF>+CCLK: "70/01/01,12:00:00"<CR><LF><CR><LF>OK<CR><LF>
         Visually, this may appear in a terminal as
-        --------------------------
+        ---------------------------------
         user@hostname:~$ AT+CCLK? (enter)
         +CCLK: "70/01/01,12:00:00"
 
         OK
         user@hostname:~$
-        --------------------------
+        ---------------------------------
         Furthermore, at this moment there is no logic implemented to parse
         several information results, as may be the case of a commandline with
         more than one command.
@@ -97,17 +120,42 @@ class TelitME910G1:
         # explicitly
         if custom_timeout:
             self.ser.timeout = custom_timeout
-        self.ser.write((AT_commandline+"\r").encode(encoding="ascii"))
-        # Discard the initial <CR><LF>
-        self.ser.read_until(expected="\r\n")
-        response = self.ser.read_until(expected="\r\n").decode(encoding="ascii")
-        self.ser.read_until(expected="\r\n")
-        ok = self.ser.read_until(expected="\r\n")
-        ok = ok.rtrip("\r\n")
-        response = response.rstrip("\r\n")
+
+        self.ser.write((AT_commandline+"\r").encode("ascii"))
+        # need response to be mutable
+        response = bytearray()
+        while self.ser.in_waiting != 0:
+            try:
+                response.extend(self.ser.read(1))
+            except serial.SerialException:
+                raise RuntimeError("Failed to read from serial input buffer")
+
+        response = response.decode("ascii")
+        result, placeholder, result_code = response.rpartition("\r\n\r\n")
+        # first element is the data response, second is "",
+        # third is result code ("OK", "ERROR", etc)
+        parts = [i for i in map(str.strip, response.rpartition("\r\n\r\n"),
+                                ("\r\n",) * 3)]
+        result = parts[0]
+        result_code = parts[2]
+
+        # check result code first
+        if "OK" in result_code:
+            pass
+        elif "ERROR" in result_code:
+            raise RuntimeError(
+                f'Command "{AT_commandline}" resulted in error "{result_code}"')
+        else:
+            raise RuntimeError(
+                'Modem did not send result code to command '
+                f'"{AT_commandline}", '
+                'or there was an error reading it (a timeout?)'
+            )
+
         if custom_timeout:
             self.ser.timeout = 3
-        return response
+
+        return result
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.
