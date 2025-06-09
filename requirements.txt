@@ -1,3 +1,4 @@
 gpiozero
 pyserial
 smbus3
+requests

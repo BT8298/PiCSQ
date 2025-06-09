@@ -254,6 +254,26 @@ class TelitME910G1:
         print("Getting signal quality statistics...")
         csq_response = self.AT_query("AT+CSQ")
 
+        # MAYBE ADD???
+        # Below code parses out the rssi_code from csq_response
+        # Double check on the specific conversion formula (this one is typical for Telit products), info should be in the user manual once we unpackage it
+        # We may want to edit the function to also return this dBm value, as it is the best marker of signal strength (which is the main purpose of the script from what I can tell)
+
+
+        # raw = csq_response[-1]                  # e.g. "+CSQ: 23,99"
+        # m = re.match(r"\+CSQ:\s*([0-9]+),", raw)
+        # if m:
+        #     rssi_code = int(m.group(1))         # e.g. 23
+        #     # per typical Telit formula: dBm = –113 + 2 × RSSI_code
+        #     rssi_dbm = -113 + (2 * rssi_code)   # e.g. –113 + 46 = –67 dBm
+        # else:
+        #     rssi_code = None
+        #     rssi_dbm = None
+
+        # print(f"Parsed RSSI: code={rssi_code}, approx {rssi_dbm} dBm")
+
+
+
         # self.ser.dtr = 0
         self.ser.close()
 
