@@ -4,50 +4,34 @@ This code is designed to work with the Telit ME910G1 modem connected via USB to
 a Raspberry Pi.
 """
 import re
+import time
 import serial
 import serial.tools.list_ports
-
-# Used in pretty-printing results for diagnostic_test()
-ws46_human_readable = (
-    "CAT-M1",
-    "NB-IoT",
-    "CAT-M1 (preferred) and NB-IoT",
-    "CAT-M1 and NB-IoT (preferred)"
-)
-gpsp_human_readable = (
-    "Off",
-    "On"
-)
-cops_act_human_readable = {
-    0: "GSM",
-    8: "CAT-M1",
-    9: "NB-IoT"
-}
-
 
 class TelitME910G1:
     """Interact with a Telit ME910G1 cellular modem.
 
     The modem is designed for LTE UE categories NB1/2 and M1.
     """
-
     def __init__(self, baud=115200, timeout=3):
         """Autodetect the modem and set serial link parameters.
 
         The last modem found is initialized (we assume there is only one modem
         connected at a time).
         """
+
         for port in serial.tools.list_ports.comports():
-            # check if 0x110a is the actual product ID of the device
-            if port.vid == 0x1bc7 and port.pid == 0x110a:
-                chardev = port.device
+            # Check if 0x110a is the actual product ID of the device
+            # For some reason, ttyUSB2 is the "good" port
+            if port.vid == 0x1bc7 and port.pid == 0x110a and port.name.endswith("USB2"):
+                self.chardev = port.device
+                print(f"Detected Telit ME910G1 serial interface at {self.chardev}")
+                break
             else:
                 raise RuntimeError("Could not find the modem serial device")
 
-        print(f"Detected Telit ME910G1 serial interface at {chardev}")
-
         self.ser = serial.Serial(
-            port=chardev,
+            port=self.chardev,
             baudrate=baud,
             xonxoff=False,
             dsrdtr=True,
@@ -56,38 +40,8 @@ class TelitME910G1:
 
     # The write and query functions do not actually "open" the serial device.
     # This logic needs to be implemented in routines which use these methods.
-    def AT_write(self, AT_commandline):
-        """Send an AT command and check for errors.
 
-        This method flushes the serial input buffer.
-
-        AT_commandline (str): the AT commandline to send, with no carriage
-            return or linebreak.
-        """
-        self.ser.reset_input_buffer()
-        self.ser.write((AT_commandline+"\r").encode("ascii"))
-        response = bytearray()
-        while self.ser.in_waiting != 0:
-            try:
-                response.extend(self.ser.read(1))
-            except serial.SerialException:
-                raise RuntimeError("Failed to read from serial input buffer")
-
-        result_code = response.decode("ascii")
-        if "OK" in result_code:
-            return
-        elif "ERROR" in result_code:
-            err_msg = result_code.replace("\r\n", "")
-            raise RuntimeError(
-                f'Command "{AT_commandline}" resulted in error "{err_msg}"')
-        else:
-            raise RuntimeError(
-                'Modem did not send response to command '
-                f'"{AT_commandline}", '
-                'or there was an error reading it (a timeout?)'
-            )
-
-    def AT_query(self, AT_commandline, custom_timeout=False):
+    def AT_query(self, AT_commandline, timeout=0.05, silent=False):
         """Send an AT command and store the response.
 
         This method assumes the modem is using verbose result codes, those set
@@ -96,13 +50,13 @@ class TelitME910G1:
         should result in a response similar to
         <CR><LF>+CCLK: "70/01/01,12:00:00"<CR><LF><CR><LF>OK<CR><LF>
         Visually, this may appear in a terminal as
-        ---------------------------------
-        user@hostname:~$ AT+CCLK? (enter)
+        --------------------------
+        AT+CCLK? (enter)
         +CCLK: "70/01/01,12:00:00"
 
         OK
-        user@hostname:~$
-        ---------------------------------
+        
+        --------------------------
         Furthermore, at this moment there is no logic implemented to parse
         several information results, as may be the case of a commandline with
         more than one command.
@@ -111,19 +65,19 @@ class TelitME910G1:
             AT_commandline (str): the AT commandline to send, with no carriage
                 return or linebreak. Note that many commands require a SIM to
                 be present.
-            custom_timeout (int): override the default timeout in seconds
-                for this query only.
+            timeout (float): Amount of time in seconds to wait before
+                reading the response.
+            silent (bool): Whether to return the result, or return None.
 
-        Returns: A string containing the modem's response.
+        Returns: A string containing the modem's response, with OK, carriage
+            returns, and line feeds stripped. Or, if no data is returned (other than an OK),
+            returns None.
         """
-        # Default to the timeout specified by ser instantiation if not given
-        # explicitly
-        if custom_timeout:
-            self.ser.timeout = custom_timeout
-
+        self.ser.reset_input_buffer()
         self.ser.write((AT_commandline+"\r").encode("ascii"))
         # need response to be mutable
         response = bytearray()
+        time.sleep(timeout)
         while self.ser.in_waiting != 0:
             try:
                 response.extend(self.ser.read(1))
@@ -131,15 +85,19 @@ class TelitME910G1:
                 raise RuntimeError("Failed to read from serial input buffer")
 
         response = response.decode("ascii")
-        result, placeholder, result_code = response.rpartition("\r\n\r\n")
-        # first element is the data response, second is "",
-        # third is result code ("OK", "ERROR", etc)
-        parts = [i for i in map(str.strip, response.rpartition("\r\n\r\n"),
-                                ("\r\n",) * 3)]
-        result = parts[0]
-        result_code = parts[2]
 
-        # check result code first
+        # handle response with actual data returned
+        if "\r\n\r\n" in response:
+            result, placeholder, result_code = response.rpartition("\r\n\r\n")
+            parts = [i for i in map(str.strip, response.rpartition("\r\n\r\n"),
+                                    ("\r\n",) * 3)]
+            result = parts[0]
+            result_code = parts[2]
+        # handle response that is only "OK" or contains "ERROR"
+        elif "\r\n" in response:
+            result = None
+            result_code = response.strip("\r\n")
+
         if "OK" in result_code:
             pass
         elif "ERROR" in result_code:
@@ -152,10 +110,22 @@ class TelitME910G1:
                 'or there was an error reading it (a timeout?)'
             )
 
-        if custom_timeout:
-            self.ser.timeout = 3
+        if result and not silent:
+            return result
+        # if the command only returns "OK" and no other information, do not return anything.
+        else:
+            return
 
-        return result
+    def setup(self):
+        """Send an initialization AT commandline."""
+
+        self.AT_query("AT V1 E1")
+
+    # this method may be redundant
+    def reset(self):
+        """Send an AT commandline after done using the modem."""
+
+        self.AT_query("ATZ")
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.
@@ -166,8 +136,7 @@ class TelitME910G1:
         """
         # serial.Serial has a context manager :)
         with self.ser:
-            if self.AT_query("AT") != "OK":
-                raise RuntimeError("Modem did not respond \"OK\" to \"AT\"")
+            self.AT_query("AT")
 
             # query sim status
             sim_status = self.AT_query("AT#QSS?")[-1]
@@ -204,7 +173,7 @@ class TelitME910G1:
         """
         with self.ser:
             # IoT technology (NB-IoT or M1)
-            technology = self.AT_query("AT#WS46?")[-1]  # string type
+            technology = self.AT_query("AT#WS46?")[-3]
             match technology:
                 case "0":
                     print("LTE mode is CAT-M1")
@@ -214,15 +183,77 @@ class TelitME910G1:
                     print("LTE mode is CAT-M1 (preferred) and NB-IoT")
                 case "3":
                     print("LTE mode is CAT-M1 and NB-IoT (preferred)")
-                case _:
-                    raise RuntimeError("Unable to determine IoT technology")
 
-    def register(self, act="NB-IoT"):
-        """Attempt to register on the Verizon network."""
+            # Network registration status
+            regstat = self.AT_query("AT+CREG?")[-1]
+            match regstat:
+                case "0":
+                    print("Not registered, not searching for operator")
+                case "1":
+                    print("Registered on home network")
+                case "2":
+                    print("Not registered, searching for operator")
+                case "3":
+                    print("Registration denied")
+                case "4":
+                    print("Registration status unknown")
+                case "5":
+                    print("Registered, roaming")
+
+            # Selected operator
+            cops = self.AT_query("AT+COPS?")
+            cops_mode = cops[7]
+            match cops_mode:
+                case "0":
+                    print("Automatic operator selection")
+                case "1":
+                    print("Manual operator selection")
+                case "2":
+                    print("Deregistered from network")
+                case "3":
+                    pass
+                case "4":
+                    print("Manual operator selection, with automatic fallback")
+            # If the module is not registered, there will only be one value reported.
+            if "," in cops:
+                cops_format = cops[9]
+                cops_oper = cops[11]
+                cops_act = cops[13]
+                match cops_act:
+                    case "0":
+                        cops_act_human_readable = "GSM"
+                    case "8":
+                        cops_act_human_readable = "CAT M-1"
+                    case "9":
+                        cops_act_human_readable = "NB-IoT"
+                print(f"Selected operator is {cops_oper} on mode {cops_act_human_readable}")
+        
+    def register(self, plmn, act="CAT M-1"):
+        """Attempt to register on a cellular network.
+
+        Args:
+            plmn (int): The operator's Mobile Country Code followed by the
+                Mobile Network code; the Public Land Mobile Network (PLMN) number.
+            act (str): The access technology of the network. Either "CAT M-1"
+                for LTE CAT M-1, or "NBIoT" for NBIoT.
+        """
         with self.ser:
             pass
-            # WIP
-            # self.AT_write("AT+COPS=
+            if act.upper() in {"LTE CAT M-1", "LTE CAT M1", "CAT M-1", "CAT M1", "LTE-M", "LTE M"}:
+                act = 8
+            elif act.upper() in {"NBIOT", "NB-IOT", "NB IOT"}:
+                act = 9
+
+            self.AT_query(f"AT+COPS=1,2,{plmn},{act}")
+
+    def network_test(self):
+        """Get signal quality statistics.
+
+        This method assumes that the modem is already registered on a cellular
+        network.
+        """
+        csq = self.AT_query("AT+CSQ")
+        servinfo = self.AT_query("AT#SERVINFO")
 
     def diagnostic_test(self, display_result=False):
         """Acquire various LTE parameters and optionally print to stdout.
@@ -249,10 +280,11 @@ class TelitME910G1:
 
         # Longer timeout due to network scan operation taking time
         print("Searching for available operators...")
-        cops_response = self.AT_query("AT+COPS=?", custom_timeout=10)
+        cops_response = self.AT_query("AT+COPS=?", timeout=60)
 
-        print("Getting signal quality statistics...")
-        csq_response = self.AT_query("AT+CSQ")
+        # This requires a connection to be established
+        #print("Getting signal quality statistics...")
+        #csq_response = self.AT_query("AT+CSQ")
 
         # MAYBE ADD???
         # Below code parses out the rssi_code from csq_response
@@ -333,3 +365,7 @@ class TelitME910G1:
             "COPS": cops_response,
             "CSQ": csq_response
         }
+
+if __name__ == "__main__":
+    # here I'm planning to put the instantiation and data export code
+    pass
