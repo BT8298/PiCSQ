@@ -53,9 +53,9 @@ class SixfabBaseHat:
     @power.setter
     def power(self, state):
         if state in {1, True, "on"}:
-            rgp.output(37, rgp.HIGH)
-        else:
             rgp.output(37, rgp.LOW)
+        elif state in {0, False, "off"}:
+            rgp.output(37, rgp.HIGH)
 
 
 class TelitME910G1(SixfabBaseHat):
