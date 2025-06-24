@@ -44,7 +44,11 @@ class SixfabBaseHat:
 
     @property
     def power(self):
-        return True if rgp.input(37) == 1 else False
+        """Control the power to the HAT.
+
+        True if the HAT is powered; False if not.
+        """
+        return False if rgp.input(37) == 1 else True
 
     @power.setter
     def power(self, state):
@@ -66,6 +70,7 @@ class TelitME910G1(SixfabBaseHat):
         The last modem found is initialized (we assume there is only one modem
         connected at a time).
         """
+        super().__init__()
         for port in serial.tools.list_ports.comports():
             # Check if 0x110a is the actual product ID of the device
             # For some reason, ttyUSB2 is the "good" port
@@ -89,6 +94,8 @@ class TelitME910G1(SixfabBaseHat):
         # Verbose Error Messages: V1
         with self.ser:
             self.AT_query("AT V1 E0")
+        # This will not run again if the modem is powered off via the parent
+        # class!
 
     # The write and query functions do not actually "open" the serial device.
     # This logic needs to be implemented in routines which use these methods.

@@ -59,8 +59,8 @@ current_date_time = str(datetime.datetime.now().strftime("%m-%d-%Y_%H:%M:%S"))
 # File format example:
 # Verizon_LTE_CAT-M1_03-20-2025_08:53:06.csv
 with open(f"{operator_alphanumeric_name}_LTE_CAT-{lte_ue_category}_{current_date_time}.csv", mode="w", newline="") as outfile:
-    writer = csv.DictWriter(fieldnames=("Trial", "Time", "Latitude (°)",
-                                        "Longitude (°)", "RSSI (dBm)"))
+    writer = csv.DictWriter(outfile, ("Trial", "Time", "Latitude (°)",
+                                      "Longitude (°)", "RSSI (dBm)"))
     writer.writeheader()
     for i in range(1, 4):
         # get gps time
@@ -74,7 +74,8 @@ with open(f"{operator_alphanumeric_name}_LTE_CAT-{lte_ue_category}_{current_date
         else:
             raise RuntimeWarning("Could not determine time by GNSS, falling back to network-acquired time")
             # actually implement this fallback
-        rssi = modem.signal_test()["rssi"]
+        # uncomment when we activate the SIM
+        #rssi = modem.signal_test()["rssi"]
         writer.writerow({"Trial": i,
                          "Time": utc_time.strftime("%H:%M:%S"),
                          "Latitude (°)": lat,
