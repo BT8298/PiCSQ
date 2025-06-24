@@ -1,4 +1,5 @@
-"""
+"""AT command wrapper for TelitME910G1.
+
 This code is designed to work with the Telit ME910G1 modem connected via USB to
 a Raspberry Pi.
 """
@@ -6,9 +7,54 @@ import re
 import time
 import serial
 import serial.tools.list_ports
+import RPi.GPIO as rgp
+
+class SixfabBaseHat:
+    """Interface to GPIO features of the board."""
+    def __init__(self):
+        rgp.setmode(rgp.BOARD)
+        # LED line
+        rgp.setup(13, rgp.OUT, initial=rgp.LOW)
+        # Airplane mode
+        rgp.setup(35, rgp.OUT, initial=rgp.LOW)
+        # Board poweroff
+        rgp.setup(37, rgp.OUT, initial=rgp.LOW)
+
+    @property
+    def led(self):
+        return True if rgp.input(13) == 1 else False
+
+    @led.setter
+    def led(self, state):
+        if state in {1, True, "on"}:
+            rgp.output(13, rgp.HIGH)
+        elif state in {0, False, "off"}:
+            rgp.output(13, rgp.LOW)
+
+    @property
+    def airplane_mode(self):
+        return True if rgp.input(35) == 1 else False
+
+    @airplane_mode.setter
+    def airplane_mode(self, state):
+        if state in {1, True, "on"}:
+            rgp.output(35, rgp.HIGH)
+        elif state in {0, False, "off"}:
+            rgp.output(35, rgp.LOW)
+
+    @property
+    def power(self):
+        return True if rgp.input(37) == 1 else False
+
+    @power.setter
+    def power(self, state):
+        if state in {1, True, "on"}:
+            rgp.output(37, rgp.HIGH)
+        else:
+            rgp.output(37, rgp.LOW)
 
 
-class TelitME910G1:
+class TelitME910G1(SixfabBaseHat):
     """Interact with a Telit ME910G1 cellular modem.
 
     The modem is designed for LTE UE categories NB1/2 and M1.
@@ -183,17 +229,18 @@ class TelitME910G1:
             interval (float): The time in seconds to wait between each query
                 for the GNSS fix.
         """
-        if self.AT_query("AT$GPSP?")[-1] == "0":
-            self.AT_query("AT$GPSP=1")
-        i = 0
-        while self.AT_query("AT$GPSACP") == ",,,,,0,,,,,":
-            pos = self.AT_query("AT$GPSACP")
-            time.sleep(interval)
-            i += 1
-            if i >= tries:
-                raise RuntimeWarning(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)")
-                break
-        print(pos)
+        with self.ser:
+            if self.AT_query("AT$GPSP?")[-1] == "0":
+                self.AT_query("AT$GPSP=1")
+            i = 1
+            while self.AT_query("AT$GPSACP") == ",,,,,0,,,,," or ",,,,,1,,,,,":
+                print(f"GNSS fix attempt: {i}")
+                pos = self.AT_query("AT$GPSACP")
+                time.sleep(interval)
+                i += 1
+                if i > tries:
+                    raise RuntimeWarning(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)")
+                    break
 
     def sim_test(self):
         """Show results of various SIM-required AT commands.
