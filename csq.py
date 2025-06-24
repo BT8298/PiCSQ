@@ -1,4 +1,3 @@
-#!/usr/bin/python
 """
 This code is designed to work with the Telit ME910G1 modem connected via USB to
 a Raspberry Pi.
@@ -8,18 +7,19 @@ import time
 import serial
 import serial.tools.list_ports
 
+
 class TelitME910G1:
     """Interact with a Telit ME910G1 cellular modem.
 
     The modem is designed for LTE UE categories NB1/2 and M1.
     """
-    def __init__(self, baud=115200, timeout=3):
+
+    def __init__(self, baud=115200, timeout=0.1):
         """Autodetect the modem and set serial link parameters.
 
         The last modem found is initialized (we assume there is only one modem
         connected at a time).
         """
-
         for port in serial.tools.list_ports.comports():
             # Check if 0x110a is the actual product ID of the device
             # For some reason, ttyUSB2 is the "good" port
@@ -38,10 +38,16 @@ class TelitME910G1:
             timeout=timeout
         )
 
+        # Setup modem; no command echo and verbose error codes
+        # Command Echo Off: E0
+        # Verbose Error Messages: V1
+        with self.ser:
+            self.AT_query("AT V1 E0")
+
     # The write and query functions do not actually "open" the serial device.
     # This logic needs to be implemented in routines which use these methods.
 
-    def AT_query(self, AT_commandline, timeout=0.05, silent=False):
+    def AT_query(self, AT_commandline, timeout=None, wait=0.1, silent=False):
         """Send an AT command and store the response.
 
         This method assumes the modem is using verbose result codes, those set
@@ -55,7 +61,7 @@ class TelitME910G1:
         +CCLK: "70/01/01,12:00:00"
 
         OK
-        
+
         --------------------------
         Furthermore, at this moment there is no logic implemented to parse
         several information results, as may be the case of a commandline with
@@ -65,35 +71,53 @@ class TelitME910G1:
             AT_commandline (str): the AT commandline to send, with no carriage
                 return or linebreak. Note that many commands require a SIM to
                 be present.
-            timeout (float): Amount of time in seconds to wait before
-                reading the response.
+            timeout (float): Temporary override for serial read timeout, in
+                seconds.
+            wait (float): Duration of the time to wait between checking for
+                received data, in seconds.
             silent (bool): Whether to return the result, or return None.
 
         Returns: A string containing the modem's response, with OK, carriage
-            returns, and line feeds stripped. Or, if no data is returned (other than an OK),
-            returns None.
+            returns, and line feeds stripped. Or, if no data is returned (other
+            than an OK), returns None.
         """
-        self.ser.reset_input_buffer()
+        # Set timeout override
+        if timeout:
+            old_timeout = self.timeout
+            setattr(self, "timeout", timeout)
+        # Clear input buffer
+        if self.ser.in_waiting != 0:
+            self.ser.reset_input_buffer()
+        # Somewhere I saw it was recommended to wait 50ms before sending next
+        # command
+        time.sleep(0.05)
         self.ser.write((AT_commandline+"\r").encode("ascii"))
+        # wait for response, if it takes long; for example, AT+COPS=?
+        while self.ser.in_waiting == 0:
+            time.sleep(wait)
         # need response to be mutable
         response = bytearray()
-        time.sleep(timeout)
         while self.ser.in_waiting != 0:
             try:
                 response.extend(self.ser.read(1))
             except serial.SerialException:
                 raise RuntimeError("Failed to read from serial input buffer")
+        # Restore original timeout
+        if timeout:
+            setattr(self, "timeout", old_timeout)
 
         response = response.decode("ascii")
 
-        # handle response with actual data returned
+        # Handle response with actual data returned.
+        # Designed for only a single data response; no chaining AT commands in
+        # a single line
         if "\r\n\r\n" in response:
             result, placeholder, result_code = response.rpartition("\r\n\r\n")
             parts = [i for i in map(str.strip, response.rpartition("\r\n\r\n"),
                                     ("\r\n",) * 3)]
             result = parts[0]
             result_code = parts[2]
-        # handle response that is only "OK" or contains "ERROR"
+        # Handle response that is only "OK" or contains "ERROR"
         elif "\r\n" in response:
             result = None
             result_code = response.strip("\r\n")
@@ -112,20 +136,10 @@ class TelitME910G1:
 
         if result and not silent:
             return result
-        # if the command only returns "OK" and no other information, do not return anything.
+        # if the command only returns "OK" and no other information, do not
+        # return anything.
         else:
             return
-
-    def setup(self):
-        """Send an initialization AT commandline."""
-
-        self.AT_query("AT V1 E1")
-
-    # this method may be redundant
-    def reset(self):
-        """Send an AT commandline after done using the modem."""
-
-        self.AT_query("ATZ")
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.
@@ -151,8 +165,6 @@ class TelitME910G1:
                     print("SIM is PIN-unlocked")
                 case "3":
                     print("SIM is ready")
-                case _:
-                    raise RuntimeError("Unable to determine SIM status")
 
             # GPS power
             gps_power = self.AT_query("AT$GPSP?")[-1]
@@ -161,8 +173,27 @@ class TelitME910G1:
                     print("GNSS controller is powered off")
                 case "1":
                     print("GNSS controller is powered on")
-                case _:
-                    raise RuntimeError("Unable to determine GPS power state")
+
+    def await_gnss(self, tries=10, interval=1):
+        """Turn on the GNSS unit and await a fix.
+
+        Args:
+            tries (int): The number of times to query the GNSS unit for a fix
+                before giving up.
+            interval (float): The time in seconds to wait between each query
+                for the GNSS fix.
+        """
+        if self.AT_query("AT$GPSP?")[-1] == "0":
+            self.AT_query("AT$GPSP=1")
+        i = 0
+        while self.AT_query("AT$GPSACP") == ",,,,,0,,,,,":
+            pos = self.AT_query("AT$GPSACP")
+            time.sleep(interval)
+            i += 1
+            if i >= tries:
+                raise RuntimeWarning(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)")
+                break
+        print(pos)
 
     def sim_test(self):
         """Show results of various SIM-required AT commands.
@@ -214,7 +245,8 @@ class TelitME910G1:
                     pass
                 case "4":
                     print("Manual operator selection, with automatic fallback")
-            # If the module is not registered, there will only be one value reported.
+            # If the module is not registered, there will only be one value
+            # reported.
             if "," in cops:
                 cops_format = cops[9]
                 cops_oper = cops[11]
@@ -227,33 +259,48 @@ class TelitME910G1:
                     case "9":
                         cops_act_human_readable = "NB-IoT"
                 print(f"Selected operator is {cops_oper} on mode {cops_act_human_readable}")
-        
-    def register(self, plmn, act="CAT M-1"):
-        """Attempt to register on a cellular network.
 
-        Args:
-            plmn (int): The operator's Mobile Country Code followed by the
-                Mobile Network code; the Public Land Mobile Network (PLMN) number.
-            act (str): The access technology of the network. Either "CAT M-1"
-                for LTE CAT M-1, or "NBIoT" for NBIoT.
-        """
-        with self.ser:
-            pass
-            if act.upper() in {"LTE CAT M-1", "LTE CAT M1", "CAT M-1", "CAT M1", "LTE-M", "LTE M"}:
-                act = 8
-            elif act.upper() in {"NBIOT", "NB-IOT", "NB IOT"}:
-                act = 9
+    #def register(self, plmn, act="CAT M-1"):
+    #    """Attempt to register on a cellular network.
 
-            self.AT_query(f"AT+COPS=1,2,{plmn},{act}")
+    #    Args:
+    #        plmn (int): The operator's Mobile Country Code followed by the
+    #            Mobile Network code; the Public Land Mobile Network (PLMN)
+    #            number.
+    #        act (str): The access technology of the network. Either "CAT M-1"
+    #            for LTE CAT M-1, or "NBIoT" for NBIoT.
+    #    """
+    #    with self.ser:
+    #        if act.upper() in {"LTE CAT M-1", "LTE CAT M1", "CAT M-1", "CAT M1", "LTE-M", "LTE M"}:
+    #            act = 8
+    #        elif act.upper() in {"NBIOT", "NB-IOT", "NB IOT"}:
+    #            act = 9
 
-    def network_test(self):
+    #        self.AT_query(f"AT+COPS=1,2,{plmn},{act}")
+
+    def signal_test(self):
         """Get signal quality statistics.
 
         This method assumes that the modem is already registered on a cellular
-        network.
+        network. In addition, it tries to acquire a GPS location. It is
+        recommended to power on the GPS unit before running this method, to
+        ensure a fix is achieved in time.
         """
         csq = self.AT_query("AT+CSQ")
         servinfo = self.AT_query("AT#SERVINFO")
+
+        m = re.match(r"\+CSQ:\s*([0-9]+),", csq)
+        if m:
+            rssi_code = int(m.group(1))         # e.g. 23
+            # per typical Telit formula: dBm = –113 + 2 × RSSI_code
+            rssi_dbm = -113 + (2 * rssi_code)   # e.g. –113 + 46 = –67 dBm
+        else:
+            rssi_code = None
+            rssi_dbm = None
+
+        #print(f"Parsed RSSI: code={rssi_code}, approx {rssi_dbm} dBm")
+
+        return {"rssi": rssi_dbm, "rssi_raw": rssi_code}
 
     def diagnostic_test(self, display_result=False):
         """Acquire various LTE parameters and optionally print to stdout.
@@ -304,67 +351,8 @@ class TelitME910G1:
 
         # print(f"Parsed RSSI: code={rssi_code}, approx {rssi_dbm} dBm")
 
-
-
         # self.ser.dtr = 0
         self.ser.close()
-
-        # Return format of AT+COPS=? is a string, with structure like
-        # (status,alnum_long_name,,numeric_name,access_technology),(.,.,,.,.),...,,(.,.)
-        # (yes, the double commas are intentional, according to Telit AT
-        # commands manual {p. 187})
-        # IDK what the last parenthesized expression means.
-        # status (int): 0 - unknown. 1 - available. 2 - current. 3 - forbidden.
-        # alnum_long_name (str): alphanumeric name of operator (16 char max.)
-        # numeric_name (str): 5 or 6 digits, first 3 are country code, last are
-        # network code (there should be double quotes around this value in
-        # the response).
-        # access_technology: 0 - GSM. 8 - CAT-M1. 9 - NB-IoT.
-        operator_info = [eval(i.replace(",,", ",")) for i in re.findall(
-            r'\([0123],"[\w &]{1,16}",,"[0-9]+",[089]\)', cops_response)]
-        operators_available = []
-        operator_current = "N/A"
-        for i in operator_info:
-            # status: available
-            if i[0] == 1:
-                # Convert numeric access technology type to human readable name
-                operators_available.append(
-                    {
-                        "name": i[1],
-                        "code": i[2],
-                        "type": cops_act_human_readable[i[3]]
-                    }
-                )
-            # status: current
-            if i[0] == 2:
-                operator_current = {
-                    "name": i[1],
-                    "code": i[2],
-                    "type": cops_act_human_readable[i[3]]
-                }
-
-        if display_result:
-            print(
-                "Preferred Technology: {}".format(
-                    ws46_human_readable[int(ws46_response[-1])]
-                ),
-                "GPS Power: {}".format(
-                    gpsp_human_readable[int(gpsp_response[-1])]
-                ),
-                "Current Network Operator: {}".format(operator_current),
-                # "RSSI: {}".format(),
-                # "BER: {}".format(),
-                "Available Network Operators: \n{}".format(
-                    operators_available),
-                sep="\n"
-            )
-
-        return {
-            "WS46": ws46_response,
-            "GPSP": gpsp_response,
-            "COPS": cops_response,
-            "CSQ": csq_response
-        }
 
 if __name__ == "__main__":
     # here I'm planning to put the instantiation and data export code
