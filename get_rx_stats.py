@@ -45,8 +45,8 @@ with modem.ser:
     cops_response = modem.AT_query("AT+COPS?")
 
     m = re.fullmatch(r'\+COPS: \d,\d,"((\w|\s){1,16})",(\d)', cops_response)
-    m.group(1)  # op name
-    m.group(3)  # access technology
+    # m.group(1): op name
+    # m.group(3): access technology
 
     if m:
         operator_alphanumeric_name = m.group(1)
@@ -70,7 +70,8 @@ with open(f"{operator_alphanumeric_name}_LTE_CAT-{lte_ue_category}_{current_date
     writer.writeheader()
     for i in range(1, 4):
         # get gps time
-        gnss_sentence = modem.AT_query("AT$GPSACP")
+        with modem.ser:
+            gnss_sentence = modem.AT_query("AT$GPSACP")
         m = re.match(r"(\d{6}\.\d{3}),", gnss_sentence)
         if m:
             utc_time = datetime.time(int(m.group(1)[0:2]),

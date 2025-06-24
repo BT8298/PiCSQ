@@ -242,7 +242,7 @@ class TelitME910G1(SixfabBaseHat):
             if self.AT_query("AT$GPSP?")[-1] == "0":
                 self.AT_query("AT$GPSP=1")
             i = 1
-            while self.AT_query("AT$GPSACP") in {",,,,,0,,,,,", ",,,,,1,,,,,"}:
+            while self.AT_query("AT$GPSACP") in {"$GPSACP: ,,,,,0,,,,,", "$GPSACP: ,,,,,1,,,,,"}:
                 print(f"GNSS fix attempt: {i}")
                 if i > tries:
                     raise RuntimeWarning(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)")
