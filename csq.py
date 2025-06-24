@@ -9,8 +9,10 @@ import serial
 import serial.tools.list_ports
 import RPi.GPIO as rgp
 
+
 class SixfabBaseHat:
     """Interface to GPIO features of the board."""
+
     def __init__(self):
         rgp.setmode(rgp.BOARD)
         # LED line
@@ -240,14 +242,13 @@ class TelitME910G1(SixfabBaseHat):
             if self.AT_query("AT$GPSP?")[-1] == "0":
                 self.AT_query("AT$GPSP=1")
             i = 1
-            while self.AT_query("AT$GPSACP") == ",,,,,0,,,,," or ",,,,,1,,,,,":
+            while self.AT_query("AT$GPSACP") in {",,,,,0,,,,,", ",,,,,1,,,,,"}:
                 print(f"GNSS fix attempt: {i}")
-                pos = self.AT_query("AT$GPSACP")
-                time.sleep(interval)
-                i += 1
                 if i > tries:
                     raise RuntimeWarning(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)")
                     break
+                time.sleep(interval)
+                i += 1
 
     def sim_test(self):
         """Show results of various SIM-required AT commands.
