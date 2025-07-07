@@ -91,16 +91,26 @@ class TelitME910G1(SixfabBaseHat):
             timeout=timeout
         )
 
-        # Setup modem; no command echo and verbose error codes
-        # Command Echo Off: E0
-        # Verbose Error Messages: V1
         with self.ser:
-            self.AT_query("AT V1 E0")
+            self.AT_query("ATE0Q0V1X0&S3&K3+IFC=2,2;+CMEE=2")
         # This will not run again if the modem is powered off via the parent
         # class!
 
     # The write and query functions do not actually "open" the serial device.
     # This logic needs to be implemented in routines which use these methods.
+
+    def parse_csurv(self, AT_response):
+        # First element should be "\r\nNetwork survey started ..."
+        # Last elements should be "Network survey ended" and "OK"
+        scan_results = AT_response.split(sep="\r\n\r\n")
+        result_code = scan_results[-1]
+        # Check if any operators were found
+        if len(scan_results) - 3 != 0:
+            # A list of lines representing scanned operators
+            result = scan_results[1:len(scan_results) - 2]
+        else:
+            result = None
+        return result, result_code
 
     def AT_query(self, AT_commandline, timeout=None, wait=0.1, silent=False):
         """Send an AT command and store the response.
@@ -134,7 +144,9 @@ class TelitME910G1(SixfabBaseHat):
 
         Returns: A string containing the modem's response, with OK, carriage
             returns, and line feeds stripped. Or, if no data is returned (other
-            than an OK), returns None.
+            than an OK), returns None. If the AT command was AT#CSURV, then the
+            response is a list of operators found by the scan, and if none were
+            found, returns None.
         """
         # Set timeout override
         if timeout:
@@ -166,7 +178,9 @@ class TelitME910G1(SixfabBaseHat):
         # Handle response with actual data returned.
         # Designed for only a single data response; no chaining AT commands in
         # a single line
-        if "\r\n\r\n" in response:
+        if "#CSURV" in AT_commandline.upper():
+            result, result_code = self.parse_csurv(response)
+        elif "\r\n\r\n" in response:
             result, placeholder, result_code = response.rpartition("\r\n\r\n")
             parts = [i for i in map(str.strip, response.rpartition("\r\n\r\n"),
                                     ("\r\n",) * 3)]
@@ -195,6 +209,35 @@ class TelitME910G1(SixfabBaseHat):
         # return anything.
         else:
             return
+
+    def one_time_setup(self):
+        # Standard AT commands
+        # Command Echo Off: E0
+        # Execution Result Messages (e.g. "OK"): Q0
+        # Verbose Error Messages: V1
+        # Minimal Extended Result Codes: X0
+        # Assert DSR When Ready to Receive AT Commands: &S3
+        # Use RTS/CTS: &K3
+        # Use RTS/CTS (alternate): +IFC=2,2
+        # Use CME ERROR messages: +CMEE=2
+        # Automatically update real time clock via network: AT+CTZU=1
+        # Save to profile 0: AT&W0
+        self.AT_query("ATE0Q0V1X0&S3&K3+IFC=2,2;+CMEE=2;+CTZU=1;&W0", silent=True)
+
+        # Non-standard AT commands
+        # Two USB interfaces for AT commands: AT#PORTCFG=8
+        # USB modem ports, 1 diag port, 1 WWAN adapter (no data traffic): AT#USBCFG=0
+        # Set DTR manually or raise on incoming bytes: AT#DTR=2
+        # Prefer LTE-M over NB-IoT: AT#WS46=2
+        # Disable NB2 mode: AT#NB2ENA=0
+        # Use all available bands: AT#BND=5,0,252582047,0,1048578
+        # Report time via AT+CCLK? in UTC: AT#CCLKMODE=1
+        # Auto select GNSS constellation depending on MCC: AT$GPSCFG=2,0
+        # Prioritize WWAN over GNSS at runtime: AT$GPSCFG=3,1
+        # GNSS power on: AT$GPSP=1
+        # Save GNSS settings in NVM: AT$GPSSAV
+        self.AT_query("AT#PORTCFG=8;AT#USBCFG=0;AT#DTR=2;AT#WS46=2;AT#NB2ENA=0;AT#BND=5,0,252582047,0,1048578;#CCLKMODE=1;$GPSCFG=2,0;$GPSCFG=3,1;$GPSP=1;$GPSSAV",
+                      silent=True)
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.
@@ -337,25 +380,39 @@ class TelitME910G1(SixfabBaseHat):
         """Get signal quality statistics.
 
         This method assumes that the modem is already registered on a cellular
-        network. In addition, it tries to acquire a GPS location. It is
-        recommended to power on the GPS unit before running this method, to
-        ensure a fix is achieved in time.
+        network.
         """
+        rfsts = self.AT_query("AT#RFSTS")
         csq = self.AT_query("AT+CSQ")
         servinfo = self.AT_query("AT#SERVINFO")
+        creg = self.AT_query("AT+CREG?")
+        cops = self.AT_query("AT+COPS?")
 
-        m = re.match(r"\+CSQ:\s*([0-9]+),", csq)
-        if m:
-            rssi_code = int(m.group(1))         # e.g. 23
-            # per typical Telit formula: dBm = –113 + 2 × RSSI_code
-            rssi_dbm = -113 + (2 * rssi_code)   # e.g. –113 + 46 = –67 dBm
+        # Check if modem is registered on a network
+        if self.AT_query("AT+COPS?").count(",") != 0:
+            sstats = rfsts.replace("#RFSTS: ", "").split(sep=",")
+            # "imsi" key is the International Mobile Station Identity, not to be
+            # confused with subscriber identity.
+            return {"plmn": sstats[0], "earfcn": sstats[1], "rsrp": sstats[2],
+                    "rssi": sstats[3], "rsrq": sstats[4], "tac": sstats[5],
+                    "rac": sstats[6], "cellid": sstats[11], "imsi": sstats[12],
+                    "opname": sstats[13], "abnd": sstats[15], "sinr":
+                    sstats[18]}
         else:
-            rssi_code = None
-            rssi_dbm = None
+            raise RuntimeWarning("Modem is not registered on a network.")
+
+        #m = re.match(r"\+CSQ:\s*([0-9]+),", csq)
+        #if m:
+        #    rssi_code = int(m.group(1))         # e.g. 23
+        #    # per typical Telit formula: dBm = –113 + 2 × RSSI_code
+        #    rssi_dbm = -113 + (2 * rssi_code)   # e.g. –113 + 46 = –67 dBm
+        #else:
+        #    rssi_code = None
+        #    rssi_dbm = None
 
         #print(f"Parsed RSSI: code={rssi_code}, approx {rssi_dbm} dBm")
 
-        return {"rssi": rssi_dbm, "rssi_raw": rssi_code}
+        #return {"rssi": rssi_dbm, "rssi_raw": rssi_code}
 
     def diagnostic_test(self, display_result=False):
         """Acquire various LTE parameters and optionally print to stdout.
