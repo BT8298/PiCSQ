@@ -3,7 +3,8 @@
 This code is designed to work with the Telit ME910G1 modem connected via USB to
 a Raspberry Pi.
 """
-import re
+import warnings
+#import re
 import time
 import serial
 import serial.tools.list_ports
@@ -151,7 +152,7 @@ class TelitME910G1(SixfabBaseHat):
         # Set timeout override
         if timeout:
             old_timeout = self.timeout
-            setattr(self, "timeout", timeout)
+            setattr(self.ser, "timeout", timeout)
         # Clear input buffer
         if self.ser.in_waiting != 0:
             self.ser.reset_input_buffer()
@@ -171,7 +172,7 @@ class TelitME910G1(SixfabBaseHat):
                 raise RuntimeError("Failed to read from serial input buffer")
         # Restore original timeout
         if timeout:
-            setattr(self, "timeout", old_timeout)
+            setattr(self.ser, "timeout", old_timeout)
 
         response = response.decode("ascii")
 
@@ -211,7 +212,7 @@ class TelitME910G1(SixfabBaseHat):
             return
 
     def one_time_setup(self):
-        # Standard AT commands
+        # These settings need to be saved into a profile via AT&W
         # Command Echo Off: E0
         # Execution Result Messages (e.g. "OK"): Q0
         # Verbose Error Messages: V1
@@ -224,7 +225,7 @@ class TelitME910G1(SixfabBaseHat):
         # Save to profile 0: AT&W0
         self.AT_query("ATE0Q0V1X0&S3&K3+IFC=2,2;+CMEE=2;+CTZU=1;&W0", silent=True)
 
-        # Non-standard AT commands
+        # These settings are automatically saved to the non-volatile memory
         # Two USB interfaces for AT commands: AT#PORTCFG=8
         # USB modem ports, 1 diag port, 1 WWAN adapter (no data traffic): AT#USBCFG=0
         # Set DTR manually or raise on incoming bytes: AT#DTR=2
@@ -232,12 +233,15 @@ class TelitME910G1(SixfabBaseHat):
         # Disable NB2 mode: AT#NB2ENA=0
         # Use all available bands: AT#BND=5,0,252582047,0,1048578
         # Report time via AT+CCLK? in UTC: AT#CCLKMODE=1
+        self.AT_query("AT#PORTCFG=8;AT#USBCFG=0;AT#DTR=2;AT#WS46=2;AT#NB2ENA=0;AT#BND=5,0,252582047,0,1048578;#CCLKMODE=1",
+                      silent=True)
+
+        # These commands have a custom way of saving to NVM.
         # Auto select GNSS constellation depending on MCC: AT$GPSCFG=2,0
         # Prioritize WWAN over GNSS at runtime: AT$GPSCFG=3,1
         # GNSS power on: AT$GPSP=1
         # Save GNSS settings in NVM: AT$GPSSAV
-        self.AT_query("AT#PORTCFG=8;AT#USBCFG=0;AT#DTR=2;AT#WS46=2;AT#NB2ENA=0;AT#BND=5,0,252582047,0,1048578;#CCLKMODE=1;$GPSCFG=2,0;$GPSCFG=3,1;$GPSP=1;$GPSSAV",
-                      silent=True)
+        self.AT_query("AT$GPSCFG=2,0;$GPSCFG=3,1;$GPSP=1;$GPSSAV", silent=True)
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.
@@ -256,7 +260,7 @@ class TelitME910G1(SixfabBaseHat):
             # match statement was added in python 3.10
             match sim_status:
                 case "0":
-                    raise RuntimeWarning("SIM not inserted")
+                    warnings.warn("SIM not inserted", RuntimeWarning)
                 case "1":
                     print("SIM inserted")
                 case "2":
@@ -288,7 +292,7 @@ class TelitME910G1(SixfabBaseHat):
             while self.AT_query("AT$GPSACP") in {"$GPSACP: ,,,,,0,,,,,", "$GPSACP: ,,,,,1,,,,,"}:
                 print(f"GNSS fix attempt: {i}")
                 if i > tries:
-                    raise RuntimeWarning(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)")
+                    warnings.warn(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)", RuntimeWarning)
                     break
                 time.sleep(interval)
                 i += 1
@@ -396,7 +400,7 @@ class TelitME910G1(SixfabBaseHat):
                         "opname": sstats[13].strip('"'), "abnd": sstats[15], "sinr":
                         sstats[18]}
             else:
-                raise RuntimeWarning("Modem is not registered on a network.")
+                warnings.warn("Modem is not registered on a network", RuntimeWarning)
 
         #m = re.match(r"\+CSQ:\s*([0-9]+),", csq)
         #if m:
