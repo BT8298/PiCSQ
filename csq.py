@@ -382,24 +382,21 @@ class TelitME910G1(SixfabBaseHat):
         This method assumes that the modem is already registered on a cellular
         network.
         """
-        rfsts = self.AT_query("AT#RFSTS")
-        csq = self.AT_query("AT+CSQ")
-        servinfo = self.AT_query("AT#SERVINFO")
-        creg = self.AT_query("AT+CREG?")
-        cops = self.AT_query("AT+COPS?")
+        with self.ser:
+            rfsts = self.AT_query("AT#RFSTS")
 
-        # Check if modem is registered on a network
-        if self.AT_query("AT+COPS?").count(",") != 0:
-            sstats = rfsts.replace("#RFSTS: ", "").split(sep=",")
-            # "imsi" key is the International Mobile Station Identity, not to be
-            # confused with subscriber identity.
-            return {"plmn": sstats[0], "earfcn": sstats[1], "rsrp": sstats[2],
-                    "rssi": sstats[3], "rsrq": sstats[4], "tac": sstats[5],
-                    "rac": sstats[6], "cellid": sstats[11], "imsi": sstats[12],
-                    "opname": sstats[13], "abnd": sstats[15], "sinr":
-                    sstats[18]}
-        else:
-            raise RuntimeWarning("Modem is not registered on a network.")
+            # Check if modem is registered on a network
+            if self.AT_query("AT+COPS?").count(",") != 0:
+                sstats = rfsts.replace("#RFSTS: ", "").split(sep=",")
+                # "imsi" key is the International Mobile Station Identity, not to be
+                # confused with subscriber identity.
+                return {"plmn": sstats[0].strip('"'), "earfcn": sstats[1], "rsrp": sstats[2],
+                        "rssi": sstats[3], "rsrq": sstats[4], "tac": sstats[5],
+                        "rac": sstats[6], "cellid": sstats[11], "imsi": sstats[12].strip('"'),
+                        "opname": sstats[13].strip('"'), "abnd": sstats[15], "sinr":
+                        sstats[18]}
+            else:
+                raise RuntimeWarning("Modem is not registered on a network.")
 
         #m = re.match(r"\+CSQ:\s*([0-9]+),", csq)
         #if m:

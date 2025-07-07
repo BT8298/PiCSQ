@@ -14,14 +14,18 @@ modem = csq.TelitME910G1()
 modem.self_test()
 modem.sim_test()
 # 30 seconds to fix
-modem.await_gnss(tries=10, interval=3)
+#modem.await_gnss(tries=10, interval=3)
+lat="test"
+lon="test"
 
 # "Oneshot" datapoints; these are acquired only once when the script is run.
 with modem.ser:
+    # temporarily disabled via triple quote
+    """
     gnss_sentence = modem.AT_query("AT$GPSACP")
     if gnss_sentence != (",,,,,0,,,,," or ",,,,,1,,,,,"):
         gnss_values = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")
-        year = gnss_values[9][4:6]
+        year = "20" + gnss_values[9][4:6]
         month = gnss_values[9][2:4]
         day = gnss_values[9][0:2]
         date = datetime.date(year, month, day)
@@ -41,7 +45,7 @@ with modem.ser:
             lon *= -1
         else:
             raise RuntimeWarning("Unable to acquire location via GNSS")
-
+    """
     #m = re.search(r"(\d{6}\.\d{4}),(\d{4}\.\d{4}[NS]),(\d{5}\.\d{4}[EW]),(?:.+,){6}(\d{6})", gnss_sentence)
     #if m:
     #    year = int(m.group(4)[0:2])
@@ -109,9 +113,13 @@ with open(filename, mode="a", newline="") as outfile:
     writer = csv.DictWriter(outfile, header)
     if os.path.getsize(filename) == 0:
         writer.writeheader()
-    # 3 trials
-    for i in range(1, 4):
+    # Number of trials to run
+    trials = 3
+    # How many seconds to wait before starting a new trial
+    trial_interval = 30
+    for i in range(1, trials+1):
         # Get time from GNSS
+        print(f"Trial {i} of {trials} started")
         with modem.ser:
             gnss_sentence = modem.AT_query("AT$GPSACP")
             gnss_time = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")[0]
@@ -122,18 +130,18 @@ with open(filename, mode="a", newline="") as outfile:
                                          tzinfo=datetime.timezone.utc)
             else:
                 print("Could not determine time by GNSS, falling back to network-provided time")
-                if modem.AT_query("AT+CTZU?")[-1] == 1:
+                if modem.AT_query("AT+CTZU?")[-1] == "1":
                     # First element should be the date, second the time
                     # Assume the time is in UTC
                     rtc_date_time = modem.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"').split(sep=",")
                     year = rtc_date_time[0][0:2]
                     month = rtc_date_time[0][3:5]
                     day = rtc_date_time[0][6:8]
-                    date = datetime.date(year, month, day)
+                    date = datetime.date(int(year), int(month), int(day))
                     hour = rtc_date_time[1][0:2]
                     minute = rtc_date_time[1][3:5]
                     second = rtc_date_time[1][6:8]
-                    utc_time = datetime.time(hour, minute, second, tzinfo=datetime.timezone.utc)
+                    utc_time = datetime.time(int(hour),int(minute), int(second), tzinfo=datetime.timezone.utc)
                 else:
                     raise RuntimeWarning("Modem real-time clock is not configured to automatically update time")
         #m = re.search(r"(\d{6}\.\d{3}),", gnss_sentence)
@@ -169,5 +177,5 @@ with open(filename, mode="a", newline="") as outfile:
                          "RSRQ (dB)": signal_test_results["rsrq"],
                          "RSRP (dBm)": signal_test_results["rsrp"],
                          "SINR (dB)": signal_test_results["sinr"]})
-        # wait 30 seconds in between trials
-        time.sleep(30)
+        print(f"Trial {i} of {trials} ended. Waiting {trial_interval} seconds to start next trial.")
+        time.sleep(trial_interval)
