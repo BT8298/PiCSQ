@@ -330,8 +330,8 @@ class TelitME910G1(SixfabBaseHat):
                     print("Registered, roaming")
 
             # Selected operator
-            cops = self.AT_query("AT+COPS?")
-            cops_mode = cops[7]
+            cops_values = self.AT_query("AT+COPS?").replace("+COPS: ", "").split(sep=",")
+            cops_mode = cops_values[0]
             match cops_mode:
                 case "0":
                     print("Automatic operator selection")
@@ -345,10 +345,10 @@ class TelitME910G1(SixfabBaseHat):
                     print("Manual operator selection, with automatic fallback")
             # If the module is not registered, there will only be one value
             # reported.
-            if "," in cops:
-                cops_format = cops[9]
-                cops_oper = cops[11]
-                cops_act = cops[13]
+            if len(cops_values) > 1:
+                cops_format = cops_values[1]
+                cops_oper = cops_values[2]
+                cops_act = cops_values[3]
                 match cops_act:
                     case "0":
                         cops_act_human_readable = "GSM"
