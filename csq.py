@@ -272,9 +272,9 @@ class TelitME910G1(SixfabBaseHat):
             gps_power = self.AT_query("AT$GPSP?")[-1]
             match gps_power:
                 case "0":
-                    print("GNSS controller is powered off")
+                    print("GNSS controller powered off")
                 case "1":
-                    print("GNSS controller is powered on")
+                    print("GNSS controller powered on")
 
     def await_gnss(self, tries=10, interval=1):
         """Turn on the GNSS unit and await a fix.
@@ -290,10 +290,11 @@ class TelitME910G1(SixfabBaseHat):
                 self.AT_query("AT$GPSP=1")
             i = 1
             while self.AT_query("AT$GPSACP") in {"$GPSACP: ,,,,,0,,,,,", "$GPSACP: ,,,,,1,,,,,"}:
-                print(f"GNSS fix attempt: {i}")
                 if i > tries:
-                    warnings.warn(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)", RuntimeWarning)
+                    raise RuntimeWarning(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)")
+                    #warnings.warn(f"Could not acquire GNSS fix in {tries} tries ({tries*interval} seconds)", RuntimeWarning)
                     break
+                print(f"GNSS fix attempt: {i}")
                 time.sleep(interval)
                 i += 1
 

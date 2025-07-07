@@ -13,15 +13,15 @@ import csq
 # This script collects information from the modem and GNSS receiver into a CSV file.
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-g", help="Attempt to get a GPS fix")
-parser.add_argument("-o", nargs=2, default="signal_statistics.csv", help="The csv file in which to save the data. Defaults to %(default)s")
-parser.add_argument("-t", nargs=2, default=3, help="The number of trials to run. Defaults to %(default)s")
-parser.add_argument("-i", nargs=2, default=30, help="The number of seconds to wait in between trials. Defaults to %(default)s")
+parser.add_argument("-g", action="store_true", help="Attempt to get a GPS fix")
+parser.add_argument("-o", type=str, default="signal_statistics.csv", help="The csv file in which to save the data. Defaults to %(default)s")
+parser.add_argument("-t", type=int, default=3, help="The number of trials to run. Defaults to %(default)s")
+parser.add_argument("-i", type=float, default=30, help="The number of seconds to wait in between trials. Defaults to %(default)s")
 argns = parser.parse_args()
 
-filename = argns.o if hasattr(argns, "o") else "signal_statistics.csv"
-trials = int(argns.t) if hasattr(argns, "t") else 3
-trial_interval = int(argns.i) if hasattr(argns, "i") else 30
+filename = argns.o
+trials = argns.t
+trial_interval = argns.i
 
 modem = csq.TelitME910G1()
 # Print some diagnostic information
@@ -31,40 +31,48 @@ modem.sim_test()
 lat="N/A"
 lon="N/A"
 # 30 seconds to fix
-if hasattr(argns, "g"):
-    modem.await_gnss(tries=10, interval=3)
+GNSS_fix = False
+if argns.g:
+    try:
+        modem.await_gnss(tries=10, interval=3)
+        GNSS_fix = True
+    except RuntimeWarning:
+        print("Unable to acquire GNSS fix")
+        GNSS_fix = False
 
 # "Oneshot" datapoints; these are acquired only once when the script is run.
 with modem.ser:
-    gnss_sentence = modem.AT_query("AT$GPSACP")
-    if gnss_sentence != (",,,,,0,,,,," or ",,,,,1,,,,,"):
-        gnss_values = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")
-        year = 20 + int(gnss_values[9][4:6])
-        month = int(gnss_values[9][2:4])
-        day = int(gnss_values[9][0:2])
-        date = datetime.date(year, month, day).isoformat()
+    # Only execute this chunk if GNSS has a fix
+    if GNSS_fix:
+        gnss_sentence = modem.AT_query("AT$GPSACP")
+        if gnss_sentence != (",,,,,0,,,,," or ",,,,,1,,,,,"):
+            gnss_values = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")
+            year = int("20" + gnss_values[9][4:6])
+            month = int(gnss_values[9][2:4])
+            day = int(gnss_values[9][0:2])
+            date = datetime.date(year, month, day).isoformat()
 
-        # Process latitude value
-        degrees = gnss_values[1][0:2]
-        minutes = gnss_values[1][2:4]
-        decimal_minutes = gnss_values[1][5:9]
-        # Convert latitude to decimal degrees format
-        lat = degrees + minutes/60 + decimal_minutes/10000/60
-        if gnss_values[1][-1] == "S":
-            lat *= -1
-        # Process longitude value
-        degrees = gnss_values[2][0:3]
-        minutes = gnss_values[2][3:5]
-        decimal_minutes = gnss_values[2][6:10]
-        lon = degrees + minutes/60 + decimal_minutes/10000/60
-        if gnss_values[2][-1] == "W":
-            lon *= -1
-    else:
-        warnings.warn("Unable to acquire location and date via GNSS; falling back to network-provided date", RuntimeWarning)
+            # Process latitude value
+            degrees = gnss_values[1][0:2]
+            minutes = gnss_values[1][2:4]
+            decimal_minutes = gnss_values[1][5:9]
+            # Convert latitude to decimal degrees format
+            lat = degrees + minutes/60 + decimal_minutes/10000/60
+            if gnss_values[1][-1] == "S":
+                lat *= -1
+            # Process longitude value
+            degrees = gnss_values[2][0:3]
+            minutes = gnss_values[2][3:5]
+            decimal_minutes = gnss_values[2][6:10]
+            lon = degrees + minutes/60 + decimal_minutes/10000/60
+            if gnss_values[2][-1] == "W":
+                lon *= -1
+        else:
+            warnings.warn("Unable to acquire location and date via GNSS; falling back to network-provided date", RuntimeWarning)
 
     if modem.AT_query("AT+CTZU?")[-1] == "1":
         rtc_date_time = modem.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"').split(sep=",")
-        year = 20 + int(rtc_date_time[0][0:2])
+        year = int("20" + rtc_date_time[0][0:2])
         month = int(rtc_date_time[0][3:5])
         day = int(rtc_date_time[0][6:8])
         date = datetime.date(year, month, day).isoformat()
@@ -90,9 +98,8 @@ with modem.ser:
 
 # The CSV header
 header = [
-        "Trial",
         "Date",
-        "Time",
+        "Time (UTC)",
         "Latitude (°)",
         "Longitude (°)",
         "LTE UE Category",
@@ -105,8 +112,8 @@ header = [
         "IMSI",
         "LTE BAND",
         "RSSI (dBm)",
-        "RSRQ (dB)",
         "RSRP (dBm)",
+        "RSRQ (dB)",
         "SINR (dB)"
         ]
 
@@ -119,17 +126,22 @@ with open(filename, mode="a", newline="") as outfile:
         # Get time from GNSS, with network time fallback
         print(f"Trial {i} of {trials} started")
         with modem.ser:
-            gnss_sentence = modem.AT_query("AT$GPSACP")
-            gnss_time = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")[0]
-            if len(gnss_time) == 10:
-                hour = int(gnss_time[0:2])
-                minute = int(gnss_time[2:4])
-                second = int(gnss_time[4:6])
-                utc_time = datetime.time(hour, minute, second,
-                                         tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
+            # Run this chunk if GNSS has a fix
+            _use_network_time = True
+            if GNSS_fix:
+                gnss_sentence = modem.AT_query("AT$GPSACP")
+                gnss_time = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")[0]
+                if len(gnss_time) == 10:
+                    hour = int(gnss_time[0:2])
+                    minute = int(gnss_time[2:4])
+                    second = int(gnss_time[4:6])
+                    utc_time = datetime.time(hour, minute, second,
+                                             tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
+                    _use_network_time = False
+                else:
+                    print("Could not determine time by GNSS, falling back to network-provided time")
             else:
-                print("Could not determine time by GNSS, falling back to network-provided time")
-                if modem.AT_query("AT+CTZU?")[-1] == "1":
+                if modem.AT_query("AT+CTZU?")[-1] == "1" and _use_network_time:
                     # First element should be the date, second the time
                     # Assume the time is in UTC
                     rtc_date_time = modem.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"').split(sep=",")
@@ -143,9 +155,8 @@ with open(filename, mode="a", newline="") as outfile:
                     warnings.warn("Modem real-time clock is not configured to automatically update time. Use manually recorded time instead!", RuntimeWarning)
 
         signal_test_results = modem.signal_test()
-        writer.writerow({"Trial": i,
-                         "Date": date,
-                         "Time": utc_time,
+        writer.writerow({"Date": date,
+                         "Time (UTC)": utc_time,
                          "Latitude (°)": lat,
                          "Longitude (°)": lon,
                          "LTE UE Category": lte_ue_category,
@@ -160,9 +171,11 @@ with open(filename, mode="a", newline="") as outfile:
                          "IMSI": signal_test_results["imsi"],
                          "LTE BAND": signal_test_results["abnd"],
                          "RSSI (dBm)": signal_test_results["rssi"],
-                         "RSRQ (dB)": signal_test_results["rsrq"],
                          "RSRP (dBm)": signal_test_results["rsrp"],
+                         "RSRQ (dB)": signal_test_results["rsrq"],
                          "SINR (dB)": signal_test_results["sinr"]})
 
-        print(f"Trial {i} of {trials} ended. Waiting {trial_interval} seconds to start next trial.")
-        time.sleep(trial_interval)
+        print(f"Trial {i} of {trials} ended")
+        if trials > 1 and i < trials:
+            print(f"Waiting {trial_interval} seconds to start next trial")
+            time.sleep(trial_interval)
