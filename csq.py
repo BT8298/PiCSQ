@@ -6,6 +6,7 @@ a Raspberry Pi.
 import warnings
 #import re
 import time
+import datetime
 import serial
 import serial.tools.list_ports
 import RPi.GPIO as rgp
@@ -77,7 +78,7 @@ class TelitME910G1(SixfabBaseHat):
         for port in serial.tools.list_ports.comports():
             # Check if 0x110a is the actual product ID of the device
             # For some reason, ttyUSB2 is the "good" port
-            if port.vid == 0x1bc7 and port.pid == 0x110a and port.name.endswith("USB2"):
+            if port.vid == 0x1bc7 and port.pid == 0x110a:
                 self.chardev = port.device
                 print(f"Detected Telit ME910G1 serial interface at {self.chardev}")
                 break
@@ -100,7 +101,70 @@ class TelitME910G1(SixfabBaseHat):
     # The write and query functions do not actually "open" the serial device.
     # This logic needs to be implemented in routines which use these methods.
 
+    def parse_gpsacp(self, AT_response):
+        gnss_sentence = self.AT_query("AT$GPSACP")
+
+        if gnss_sentence != (",,,,,0,,,,," or ",,,,,1,,,,,"):
+            gnss_values = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")
+            # Process date
+            year = int("20" + gnss_values[9][4:6])
+            month = int(gnss_values[9][2:4])
+            day = int(gnss_values[9][0:2])
+            date = datetime.date(year, month, day).isoformat()
+            # Process UTC time
+            hour = int(gnss_values[0][0:2])
+            minute = int(gnss_values[0][2:4])
+            second = int(gnss_values[0][4:6])
+            time = datetime.time(hour, minute, second,
+                                     tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
+            # Process latitude
+            degrees = gnss_values[1][0:2]
+            minutes = gnss_values[1][2:4]
+            decimal_minutes = gnss_values[1][5:9]
+            # Convert latitude to decimal degrees format
+            lat = degrees + minutes/60 + decimal_minutes/10000/60
+            if gnss_values[1][-1] == "S":
+                lat *= -1
+            # Process longitude
+            degrees = gnss_values[2][0:3]
+            minutes = gnss_values[2][3:5]
+            decimal_minutes = gnss_values[2][6:10]
+            lon = degrees + minutes/60 + decimal_minutes/10000/60
+            if gnss_values[2][-1] == "W":
+                lon *= -1
+        else:
+            warnings.warn("Unable to acquire location and date via GNSS; falling back to network-provided date", RuntimeWarning)
+            lat = "N/A"
+            lon = "N/A"
+            date, time = self.parse_cclk(self.AT_query("AT+CCLK?"))
+
+        return date, time, lat, lon
+
+    def parse_cclk(self, AT_response):
+        if self.AT_query("AT+CTZU?")[-1] == "1":
+            rtc_date_time = self.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"').split(sep=",")
+            # Process date
+            year = int("20" + rtc_date_time[0][0:2])
+            month = int(rtc_date_time[0][3:5])
+            day = int(rtc_date_time[0][6:8])
+            date = datetime.date(year, month, day).isoformat()
+            # Process time, assumed to be in UTC
+            hour = int(rtc_date_time[1][0:2])
+            minute = int(rtc_date_time[1][3:5])
+            second = int(rtc_date_time[1][6:8])
+            time = datetime.time(hour, minute, second,
+                                     tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
+        else:
+            date = "N/A"
+            time = "N/A"
+            warnings.warn("Modem real-time clock is not configured to automatically update time/date. Use manually recorded time/date instead!", RuntimeWarning)
+
+        return date, time
+
     def parse_csurv(self, AT_response):
+        """Work in progress parser for the results of AT#CSURV.
+
+        AT#CSURV is manufacturer-specific network survey command."""
         # First element should be "\r\nNetwork survey started ..."
         # Last elements should be "Network survey ended" and "OK"
         scan_results = AT_response.split(sep="\r\n\r\n")
@@ -233,7 +297,15 @@ class TelitME910G1(SixfabBaseHat):
         # Disable NB2 mode: AT#NB2ENA=0
         # Use all available bands: AT#BND=5,0,252582047,0,1048578
         # Report time via AT+CCLK? in UTC: AT#CCLKMODE=1
-        self.AT_query("AT#PORTCFG=8;AT#USBCFG=0;AT#DTR=2;AT#WS46=2;AT#NB2ENA=0;AT#BND=5,0,252582047,0,1048578;#CCLKMODE=1",
+        self.AT_query("AT#PORTCFG=8;"
+                      "AT#USBCFG=0;"
+                      "AT#DTR=2;"
+                      "AT#WS46=2;"
+                      "AT#NB2ENA=0;"
+                      "AT#BND=5,0,252582047,0,1048578;"
+                      "#CCLKMODE=1;"
+                      '+CGDCONT=1,"IP","soracom.io","",1,1;'
+                      "+CGAUTH=1,2,sora,sora",
                       silent=True)
 
         # These commands have a custom way of saving to NVM.
@@ -241,7 +313,11 @@ class TelitME910G1(SixfabBaseHat):
         # Prioritize WWAN over GNSS at runtime: AT$GPSCFG=3,1
         # GNSS power on: AT$GPSP=1
         # Save GNSS settings in NVM: AT$GPSSAV
-        self.AT_query("AT$GPSCFG=2,0;$GPSCFG=3,1;$GPSP=1;$GPSSAV", silent=True)
+        self.AT_query("AT$GPSCFG=2,0;"
+                      "$GPSCFG=3,1;"
+                      "$GPSP=1;"
+                      "$GPSSAV",
+                      silent=True)
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.
