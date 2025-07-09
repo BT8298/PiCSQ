@@ -102,10 +102,8 @@ class TelitME910G1(SixfabBaseHat):
     # This logic needs to be implemented in routines which use these methods.
 
     def parse_gpsacp(self, AT_response):
-        gnss_sentence = self.AT_query("AT$GPSACP")
-
-        if gnss_sentence != (",,,,,0,,,,," or ",,,,,1,,,,,"):
-            gnss_values = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")
+        if AT_response != (",,,,,0,,,,," or ",,,,,1,,,,,"):
+            gnss_values = AT_response.replace("$GPSACP: ", "").split(sep=",")
             # Process date
             year = int("20" + gnss_values[9][4:6])
             month = int(gnss_values[9][2:4])
@@ -118,17 +116,17 @@ class TelitME910G1(SixfabBaseHat):
             time = datetime.time(hour, minute, second,
                                      tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
             # Process latitude
-            degrees = gnss_values[1][0:2]
-            minutes = gnss_values[1][2:4]
-            decimal_minutes = gnss_values[1][5:9]
+            degrees = int(gnss_values[1][0:2])
+            minutes = int(gnss_values[1][2:4])
+            decimal_minutes = int(gnss_values[1][5:9])
             # Convert latitude to decimal degrees format
             lat = degrees + minutes/60 + decimal_minutes/10000/60
             if gnss_values[1][-1] == "S":
                 lat *= -1
             # Process longitude
-            degrees = gnss_values[2][0:3]
-            minutes = gnss_values[2][3:5]
-            decimal_minutes = gnss_values[2][6:10]
+            degrees = int(gnss_values[2][0:3])
+            minutes = int(gnss_values[2][3:5])
+            decimal_minutes = int(gnss_values[2][6:10])
             lon = degrees + minutes/60 + decimal_minutes/10000/60
             if gnss_values[2][-1] == "W":
                 lon *= -1
@@ -141,23 +139,25 @@ class TelitME910G1(SixfabBaseHat):
         return date, time, lat, lon
 
     def parse_cclk(self, AT_response):
-        if self.AT_query("AT+CTZU?")[-1] == "1":
-            rtc_date_time = self.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"').split(sep=",")
-            # Process date
-            year = int("20" + rtc_date_time[0][0:2])
-            month = int(rtc_date_time[0][3:5])
-            day = int(rtc_date_time[0][6:8])
-            date = datetime.date(year, month, day).isoformat()
-            # Process time, assumed to be in UTC
-            hour = int(rtc_date_time[1][0:2])
-            minute = int(rtc_date_time[1][3:5])
-            second = int(rtc_date_time[1][6:8])
-            time = datetime.time(hour, minute, second,
-                                     tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
-        else:
-            date = "N/A"
-            time = "N/A"
-            warnings.warn("Modem real-time clock is not configured to automatically update time/date. Use manually recorded time/date instead!", RuntimeWarning)
+        # Should implement automatic time update checking outside of this function
+        #if self.AT_query("AT+CTZU?")[-1] == "1":
+
+        rtc_date_time = AT_response.replace("+CCLK: ", "").strip('"').split(sep=",")
+        # Process date
+        year = int("20" + rtc_date_time[0][0:2])
+        month = int(rtc_date_time[0][3:5])
+        day = int(rtc_date_time[0][6:8])
+        date = datetime.date(year, month, day).isoformat()
+        # Process time, assumed to be in UTC
+        hour = int(rtc_date_time[1][0:2])
+        minute = int(rtc_date_time[1][3:5])
+        second = int(rtc_date_time[1][6:8])
+        time = datetime.time(hour, minute, second,
+                                 tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
+        #else:
+        #    date = "N/A"
+        #    time = "N/A"
+        #    warnings.warn("Modem real-time clock is not configured to automatically update time/date. Use manually recorded time/date instead!", RuntimeWarning)
 
         return date, time
 

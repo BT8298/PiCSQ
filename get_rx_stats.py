@@ -27,58 +27,32 @@ modem = csq.TelitME910G1()
 # Print some diagnostic information
 modem.self_test()
 modem.sim_test()
-# Dummy values if GNSS fix not requested
-lat="N/A"
-lon="N/A"
 # 30 seconds to fix
-GNSS_fix = False
+_GNSS_fix = False
 if argns.g:
     try:
         modem.await_gnss(tries=10, interval=3)
-        GNSS_fix = True
+        _GNSS_fix = True
     except RuntimeWarning:
         print("Unable to acquire GNSS fix")
-        GNSS_fix = False
+        _GNSS_fix = False
 
 # "Oneshot" datapoints; these are acquired only once when the script is run.
 with modem.ser:
-    # Only execute this chunk if GNSS has a fix
-    if GNSS_fix:
-        gnss_sentence = modem.AT_query("AT$GPSACP")
-        if gnss_sentence != (",,,,,0,,,,," or ",,,,,1,,,,,"):
-            gnss_values = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")
-            year = int("20" + gnss_values[9][4:6])
-            month = int(gnss_values[9][2:4])
-            day = int(gnss_values[9][0:2])
-            date = datetime.date(year, month, day).isoformat()
-
-            # Process latitude value
-            degrees = gnss_values[1][0:2]
-            minutes = gnss_values[1][2:4]
-            decimal_minutes = gnss_values[1][5:9]
-            # Convert latitude to decimal degrees format
-            lat = degrees + minutes/60 + decimal_minutes/10000/60
-            if gnss_values[1][-1] == "S":
-                lat *= -1
-            # Process longitude value
-            degrees = gnss_values[2][0:3]
-            minutes = gnss_values[2][3:5]
-            decimal_minutes = gnss_values[2][6:10]
-            lon = degrees + minutes/60 + decimal_minutes/10000/60
-            if gnss_values[2][-1] == "W":
-                lon *= -1
-        else:
-            warnings.warn("Unable to acquire location and date via GNSS; falling back to network-provided date", RuntimeWarning)
-
     if modem.AT_query("AT+CTZU?")[-1] == "1":
-        rtc_date_time = modem.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"').split(sep=",")
-        year = int("20" + rtc_date_time[0][0:2])
-        month = int(rtc_date_time[0][3:5])
-        day = int(rtc_date_time[0][6:8])
-        date = datetime.date(year, month, day).isoformat()
+        _network_time_up_to_date = True
+    # Only execute this chunk if GNSS has a fix
+    if _GNSS_fix:
+        date, _, lat, lon = modem.parse_gpsacp(modem.AT_query("AT$GPSACP"))
+        warnings.warn("Unable to acquire location and date via GNSS; falling back to network-provided date", RuntimeWarning)
+    elif _network_time_up_to_date:
+        print("Using WWAN for time and date instead of GNSS")
+        date, _ = modem.parse_cclk(modem.AT_query("AT+CCLK?"))
+        lat = "N/A"
+        lon = "N/A"
     else:
         date = "N/A"
-        warnings.warn("Modem real-time clock is not configured to automatically update date. Use manually recorded date instead!", RuntimeWarning)
+        warnings.warn("Modem real-time clock is not configured to automatically update. Use manually recorded time information instead!", RuntimeWarning)
 
     # Set operator format to alphanumeric long form (up to 16 characters)
     modem.AT_query("AT+COPS=3,0")
@@ -109,7 +83,6 @@ header = [
         "TAC",
         "RAC",
         "CELLID",
-        "IMSI",
         "LTE BAND",
         "RSSI (dBm)",
         "RSRP (dBm)",
@@ -128,31 +101,13 @@ with open(filename, mode="a", newline="") as outfile:
         with modem.ser:
             # Run this chunk if GNSS has a fix
             _use_network_time = True
-            if GNSS_fix:
-                gnss_sentence = modem.AT_query("AT$GPSACP")
-                gnss_time = gnss_sentence.replace("$GPSACP: ", "").split(sep=",")[0]
-                if len(gnss_time) == 10:
-                    hour = int(gnss_time[0:2])
-                    minute = int(gnss_time[2:4])
-                    second = int(gnss_time[4:6])
-                    utc_time = datetime.time(hour, minute, second,
-                                             tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
-                    _use_network_time = False
-                else:
-                    print("Could not determine time by GNSS, falling back to network-provided time")
+            if _GNSS_fix:
+                _, utc_time, _, _, = modem.parse_gpsacp(modem.AT_query("AT$GPSACP"))
+            elif _network_time_up_to_date:
+                # Assume the time is in UTC
+                _, utc_time = modem.parse_cclk(modem.AT_query("AT+CCLK?"))
             else:
-                if modem.AT_query("AT+CTZU?")[-1] == "1" and _use_network_time:
-                    # First element should be the date, second the time
-                    # Assume the time is in UTC
-                    rtc_date_time = modem.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"').split(sep=",")
-                    hour = int(rtc_date_time[1][0:2])
-                    minute = int(rtc_date_time[1][3:5])
-                    second = int(rtc_date_time[1][6:8])
-                    utc_time = datetime.time(hour, minute, second,
-                                             tzinfo=datetime.timezone.utc).strftime("%H:%M:%S")
-                else:
-                    utc_time = "N/A"
-                    warnings.warn("Modem real-time clock is not configured to automatically update time. Use manually recorded time instead!", RuntimeWarning)
+                utc_time = "N/A"
 
         signal_test_results = modem.signal_test()
         writer.writerow({"Date": date,
@@ -166,9 +121,6 @@ with open(filename, mode="a", newline="") as outfile:
                          "TAC": signal_test_results["tac"],
                          "RAC": signal_test_results["rac"],
                          "CELLID": signal_test_results["cellid"],
-                         # This is the International Mobile Station Identity,
-                         # not subscriber identity.
-                         "IMSI": signal_test_results["imsi"],
                          "LTE BAND": signal_test_results["abnd"],
                          "RSSI (dBm)": signal_test_results["rssi"],
                          "RSRP (dBm)": signal_test_results["rsrp"],
