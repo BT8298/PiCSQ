@@ -298,14 +298,16 @@ class TelitME910G1(SixfabBaseHat):
         # Disable NB2 mode: AT#NB2ENA=0
         # Use all available bands: AT#BND=5,0,252582047,0,1048578
         # Report time via AT+CCLK? in UTC: AT#CCLKMODE=1
+        # Configure PDP context APN: AT+CGDCONT=1,IP,soracom.io,"",1,1
+        # Configure PDP context authentication: AT+CGAUTH=1,2,sora,sora
         self.AT_query("AT#PORTCFG=8;"
-                      "AT#USBCFG=0;"
-                      "AT#DTR=2;"
-                      "AT#WS46=2;"
-                      "AT#NB2ENA=0;"
-                      "AT#BND=5,0,252582047,0,1048578;"
+                      "#USBCFG=0;"
+                      "#DTR=2;"
+                      "#WS46=2;"
+                      "#NB2ENA=0;"
+                      "#BND=5,0,252582047,0,1048578;"
                       "#CCLKMODE=1;"
-                      '+CGDCONT=1,"IP","soracom.io","",1,1;'
+                      '+CGDCONT=1,IP,soracom.io,"",1,1;'
                       "+CGAUTH=1,2,sora,sora",
                       silent=True)
 
@@ -319,6 +321,73 @@ class TelitME910G1(SixfabBaseHat):
                       "$GPSP=1;"
                       "$GPSSAV",
                       silent=True)
+
+    # Maybe ECM mode is better...
+    def http_setup(self, server_address, pkt_size, prof_id=0, server_port=80, auth_type=0,
+                   timeout=30, pdp_cid=0):
+        self.AT_query(f"AT#HTTPCFG="
+                      f"{prof_id},"
+                      f"{server_address},"
+                      f"{server_port},"
+                      f"{auth_type},"
+                       ",,0,"
+                      f"{timeout},"
+                      f"{pdp_cid},"
+                      f"{pkt_size},"
+                       "0,0",
+                      silent=True
+                      )
+    def http_send(self, resource, data_len, data, prof_id=0, request_type="POST", post_param=1):
+        match request_type.upper():
+            case "POST":
+                command = 0
+            case "PUT":
+                command = 1
+            case _:
+                raise RuntimeError("Unsupported request_type")
+
+        HTTP_AT_command = "AT#HTTPSND=" \
+                          f"{prof_id}," \
+                          f"{command}," \
+                          f"{resource}," \
+                          f"{data_len}," \
+                          f"{post_param}"
+
+        # Just like self.AT_query, the serial device needs to be opened by
+        # a higher level piece of code
+        if self.ser.in_waiting != 0:
+            self.ser.reset_input_buffer()
+        time.sleep(0.05)
+        self.ser.write((HTTP_AT_command+"\r").encode("ascii"))
+        while self.ser.in_waiting == 0:
+            time.sleep(0.1)
+        ready_for_data_entry = bytearray()
+        while self.ser.in_waiting != 0:
+            try:
+                ready_for_data_entry.extend(self.ser.read(1))
+            except serial.SerialException:
+                raise RuntimeError("Failed to read from serial input buffer")
+        if ready_for_data_entry == ">>>":
+            self.ser.write(data.encode("ascii"))
+            time.sleep(0.01)
+            # Check for <CR><LF>OK<CR><LF>
+            self.ser.read(6)
+            while self.ser.in_waiting == 0:
+                time.sleep(0.1)
+            # Listen for #HTTPRING unsolicited result code
+            HTTP_ring = bytearray()
+            i = 1
+            while self.ser.in_waiting != 0 and i<=10:
+                try:
+                    HTTP_ring.extend(self.ser.read(1))
+                except serial.SerialException:
+                    raise RuntimeError("Failed to read from serial input buffer")
+                time.sleep(1)
+                i += 1
+            if "#HTTPRING" in HTTP_ring:
+                return
+            else:
+                raise RuntimeError("#HTTPRING URC not detected")
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.
@@ -544,7 +613,3 @@ class TelitME910G1(SixfabBaseHat):
 
         # self.ser.dtr = 0
         self.ser.close()
-
-if __name__ == "__main__":
-    # here I'm planning to put the instantiation and data export code
-    pass
