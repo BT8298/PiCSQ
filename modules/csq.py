@@ -324,7 +324,7 @@ class TelitME910G1(SixfabBaseHat):
 
     # Maybe ECM mode is better...
     def http_setup(self, server_address, pkt_size, prof_id=0, server_port=80, auth_type=0,
-                   timeout=30, pdp_cid=0):
+                   timeout=30, pdp_cid=1):
         self.AT_query(f"AT#HTTPCFG="
                       f"{prof_id},"
                       f"{server_address},"

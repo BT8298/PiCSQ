@@ -1,11 +1,11 @@
 [Unit]
-Description="Data collection loop"
-Wants=
+Description=Grab sensor data and upload to remote server
 Conflicts=ModemManager.service
 
 [Service]
 Type=exec
-ExecStart=smartpark_data_logger
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/smartpark_data_logger
 
 [Install]
 WantedBy=multi-user.target
