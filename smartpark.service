@@ -1,0 +1,11 @@
+[Unit]
+Description="Data collection loop"
+Wants=
+Conflicts=ModemManager.service
+
+[Service]
+Type=exec
+ExecStart=smartpark_data_logger
+
+[Install]
+WantedBy=multi-user.target

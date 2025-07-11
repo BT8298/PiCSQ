@@ -94,7 +94,8 @@ class TelitME910G1(SixfabBaseHat):
         )
 
         with self.ser:
-            self.AT_query("ATE0Q0V1X0&S3&K3+IFC=2,2;+CMEE=2")
+            self.AT_query("ATE0Q0V1X0&S3&K3")
+            self.AT_query("AT+IFC=2,2;+CMEE=2")
         # This will not run again if the modem is powered off via the parent
         # class!
 
