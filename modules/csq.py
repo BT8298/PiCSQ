@@ -216,7 +216,7 @@ class TelitME910G1(SixfabBaseHat):
         """
         # Set timeout override
         if timeout:
-            old_timeout = self.timeout
+            old_timeout = self.http_response_timeout
             setattr(self.ser, "timeout", timeout)
         # Clear input buffer
         if self.ser.in_waiting != 0:
@@ -323,21 +323,56 @@ class TelitME910G1(SixfabBaseHat):
                       silent=True)
 
     # Maybe ECM mode is better...
-    def http_setup(self, server_address, pkt_size, prof_id=0, server_port=80, auth_type=0,
-                   timeout=30, pdp_cid=1):
+    def http_setup(self, server_address, http_prof_id=0, server_port=80,
+                   pkt_size=300, http_response_timeout=30, pdp_cid=1):
+        """Save an HTTP context to the non-volatile memory of the modem.
+
+        This is for HTTP, not HTTPS.
+
+        Args:
+            server_address (str): The IP address or domain name of the remote
+                server to connect to.
+            prof_id (int|str): The numeric profile identifier (0 to 2) to save
+                this context to; default 0.
+            server_port (int|str): The listening port of the remote server;
+                default 80.
+            pkt_size (int|str): Unsure of what this is, but ranges from 1 to
+                1500; default 300.
+            http_response_timeout (int|str): Timeout for the server's response.
+            pdp_cid (int|str): ID of the PDP context (1 to modem-specific
+                maximum number) to use for this HTTP context; default 1.
+        """
         self.AT_query(f"AT#HTTPCFG="
-                      f"{prof_id},"
+                      f"{http_prof_id},"
                       f"{server_address},"
                       f"{server_port},"
-                      f"{auth_type},"
-                       ",,0,"
-                      f"{timeout},"
+                      # No HTTP authentication, username, password, or SSL.
+                       '0,"","",0,'
+                      f"{http_response_timeout},"
                       f"{pdp_cid},"
                       f"{pkt_size},"
                        "0,0",
                       silent=True
                       )
-    def http_send(self, resource, data_len, data, prof_id=0, request_type="POST", post_param=1):
+
+    def http_send(self, resource, data, http_prof_id=0, request_type="POST", post_param=1):
+        """Send an HTTP request to a remote endpoint.
+
+        Args:
+            resource (str): The HTTP resource to send the request to. Must
+                always begin with "/"; for example, to send to
+                "www.foo.bar/api/intake", resource should be set to
+                "/api/intake".
+            data (str): The data to send in the body of the request. Currently
+                the type must be str.
+            http_prof_id (int|str): The numeric identifier (from 0 to 2) of the
+                HTTP context to use; default 0. These are stored on the modem
+                non-volatile memory.
+            request_type (str): Either "POST" or "PUT".
+            post_param (str): The HTTP Content-type; defaults to
+            "application/x-www-form-urlencoded". Only use with POST requests.
+
+        """
         match request_type.upper():
             case "POST":
                 command = 0
@@ -346,12 +381,19 @@ class TelitME910G1(SixfabBaseHat):
             case _:
                 raise RuntimeError("Unsupported request_type")
 
-        HTTP_AT_command = "AT#HTTPSND=" \
-                          f"{prof_id}," \
-                          f"{command}," \
-                          f"{resource}," \
-                          f"{data_len}," \
-                          f"{post_param}"
+        if command == 0:
+            HTTP_AT_command = "AT#HTTPSND=" \
+                              f"{http_prof_id}," \
+                              f"{command}," \
+                              f"{resource}," \
+                              f"{len(data)}"
+        elif command == 1:
+            HTTP_AT_command = "AT#HTTPSND=" \
+                              f"{http_prof_id}," \
+                              f"{command}," \
+                              f"{resource}," \
+                              f"{len(data)}," \
+                              f"{post_param}"
 
         # Just like self.AT_query, the serial device needs to be opened by
         # a higher level piece of code
@@ -367,27 +409,36 @@ class TelitME910G1(SixfabBaseHat):
                 ready_for_data_entry.extend(self.ser.read(1))
             except serial.SerialException:
                 raise RuntimeError("Failed to read from serial input buffer")
-        if ready_for_data_entry == ">>>":
+        if ready_for_data_entry == "+CME ERROR: connection failed":
+            raise RuntimeError('Modem returned error: "CME ERROR: connection failed"')
+        elif ready_for_data_entry == ">>>":
             self.ser.write(data.encode("ascii"))
-            time.sleep(0.01)
-            # Check for <CR><LF>OK<CR><LF>
-            self.ser.read(6)
             while self.ser.in_waiting == 0:
                 time.sleep(0.1)
-            # Listen for #HTTPRING unsolicited result code
-            HTTP_ring = bytearray()
-            i = 1
-            while self.ser.in_waiting != 0 and i<=10:
-                try:
-                    HTTP_ring.extend(self.ser.read(1))
-                except serial.SerialException:
-                    raise RuntimeError("Failed to read from serial input buffer")
-                time.sleep(1)
-                i += 1
-            if "#HTTPRING" in HTTP_ring:
-                return
-            else:
-                raise RuntimeError("#HTTPRING URC not detected")
+            # Check for <CR><LF>OK<CR><LF>
+            response = self.ser.read_until(b'\r\n')
+            if "OK" not in response:
+                raise RuntimeError(f"Modem returned error after attempting to send HTTP data: {response}")
+            elif "OK" in response:
+                while self.ser.in_waiting == 0:
+                    time.sleep(0.1)
+                # Listen for #HTTPRING unsolicited result code
+                HTTP_ring = bytearray()
+                i = 1
+                while self.ser.in_waiting == 0 and i <= 150:
+                    time.sleep(0.1)
+                    i += 1
+                if i == 150:
+                    raise RuntimeError("Did not get AT#HTTPRING after 15 seconds")
+                while self.ser.in_waiting != 0:
+                    try:
+                        HTTP_ring.extend(self.ser.read(1))
+                    except serial.SerialException:
+                        raise RuntimeError("Failed to read from serial input buffer")
+                if "#HTTPRING" in HTTP_ring:
+                    return
+                else:
+                    raise RuntimeError("#HTTPRING URC not detected")
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.

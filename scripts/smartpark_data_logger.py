@@ -43,8 +43,6 @@ with modem.ser:
     cclk_response = modem.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"')
     print(f"Received date and time from modem: {cclk_response}")
     modem.http_setup(server_address=website_address, server_port=website_port, pkt_size=100)
-    # PDP contexts seem to auto-deactivate after some time
-    #modem.AT_query("AT#SGACT=1,1")
 
 year = int(cclk_response[0:2])
 month = int(cclk_response[3:5])
@@ -99,8 +97,6 @@ while True:
     # If the send interval is low enough (ballpark 5 seconds), I would
     # recommend keeping the serial device open instead of using the with
     # statement, which opens and closes the device each pass of the loop
-    """
     with modem.ser:
-        modem.http_send(resource=website_endpoint, data_len=len(json_data), data=json_data)
-    """
+        modem.http_send(resource=website_endpoint, data=json_data, post_param="application/json")
     time.sleep(data_acquisition_interval)
