@@ -2,6 +2,7 @@
 # Longrun systemd service which polls sensors, saves results to csv, and uploads most recent sensor values
 import csv
 import datetime
+import grp
 import json
 import os
 import pwd
@@ -66,6 +67,9 @@ if subprocess.run(("timedatectl", "set-time", timedatectl_string, "--no-ask-pass
 else:
     print("System time updated")
 
+# Set the process supplemental groups to dialout, to allow accessing
+# /dev/ttyUSB devices
+os.setgroups((grp.getgrnam("dialout").gr_gid,))
 # Drop root priveleges needed for setting the system time
 # This also ensures the csv file is accessible by the user
 os.setgid(pwd.getpwnam(unix_username).pw_gid)

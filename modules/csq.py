@@ -409,14 +409,17 @@ class TelitME910G1(SixfabBaseHat):
                 ready_for_data_entry.extend(self.ser.read(1))
             except serial.SerialException:
                 raise RuntimeError("Failed to read from serial input buffer")
-        if ready_for_data_entry == "+CME ERROR: connection failed":
-            raise RuntimeError('Modem returned error: "CME ERROR: connection failed"')
-        elif ready_for_data_entry == ">>>":
+        print("DEBUG ready_for_data_entry is", ready_for_data_entry)
+        if ready_for_data_entry.decode("ascii") != "\r\n>>>":
+            raise RuntimeError(f"Modem returned error: {ready_for_data_entry}")
+        else:
             self.ser.write(data.encode("ascii"))
             while self.ser.in_waiting == 0:
                 time.sleep(0.1)
             # Check for <CR><LF>OK<CR><LF>
-            response = self.ser.read_until(b'\r\n')
+            self.ser.read_until(b'\r\n')
+            response = self.ser.read_until(b'\r\n').decode("ascii")
+            print("DEBUG immediate response after AT#HTTPSND is", response)
             if "OK" not in response:
                 raise RuntimeError(f"Modem returned error after attempting to send HTTP data: {response}")
             elif "OK" in response:
@@ -435,6 +438,8 @@ class TelitME910G1(SixfabBaseHat):
                         HTTP_ring.extend(self.ser.read(1))
                     except serial.SerialException:
                         raise RuntimeError("Failed to read from serial input buffer")
+                print("DEBUG HTTP_ring is", HTTP_ring)
+                HTTP_ring = HTTP_ring.decode("ascii")
                 if "#HTTPRING" in HTTP_ring:
                     return
                 else:
