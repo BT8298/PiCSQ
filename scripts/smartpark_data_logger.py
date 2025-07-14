@@ -8,6 +8,7 @@ import os
 import pwd
 import subprocess
 import time
+import warnings
 
 import csq
 import sensors
@@ -20,10 +21,10 @@ unix_username = "wpi"
 # Cannot use ~ expansion due to systemd not initializing HOME environment variable
 csv_file_path = os.path.join(pwd.getpwnam(unix_username).pw_dir, "sensor_reading_history.csv")
 # Either a domain name or IP address
-website_address = "PUT ADDRESS HERE"
+website_address = "PUT_ADDRESS_HERE"
 website_port = 80
 # The resource to send to on the HTTP server
-website_endpoint = "/"
+website_endpoint = "/api/sensordata"
 
 SHTC3_sensor = sensors.SHTC3()
 LPS22HB_sensor = sensors.LPS22HB()
@@ -44,6 +45,7 @@ with modem.ser:
     cclk_response = modem.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"')
     print(f"Received date and time from modem: {cclk_response}")
     modem.http_setup(server_address=website_address, server_port=website_port, pkt_size=100)
+    modem.AT_query("AT#SGACT=1,1")
 
 year = int(cclk_response[0:2])
 month = int(cclk_response[3:5])
@@ -102,5 +104,8 @@ while True:
     # recommend keeping the serial device open instead of using the with
     # statement, which opens and closes the device each pass of the loop
     with modem.ser:
-        modem.http_send(resource=website_endpoint, data=json_data, post_param="application/json")
+        try:
+            modem.http_send(resource=website_endpoint, data=json_data, post_param="application/json")
+        except csq.ATCommandError:
+            warnings.warn("Exception in HTTP request", csq.ATCommandError)
     time.sleep(data_acquisition_interval)

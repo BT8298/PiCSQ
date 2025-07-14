@@ -15,4 +15,4 @@ install -o root -g root -m 755 scripts/smartpark_data_logger.py /usr/bin/smartpa
 systemctl stop ModemManager.service && systemctl disable ModemManager.service
 systemctl enable smartpark.service
 timedatectl set-ntp false
-echo Daemon will autostart on next boot. To enable now, run "systemctl enable smartpark.service".
+echo Daemon will autostart on next boot. To start now, run "systemctl start smartpark.service".
