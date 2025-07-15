@@ -230,8 +230,24 @@ class TelitME910G1(SixfabBaseHat):
 
         return network_info_list
 
+    def await_urc(self, timeout=3, wait=0.1):
+        old_timeout = self.ser.timeout
+        self.ser.timeout = timeout
+        # hint is 5 so that it can capture '\r\nOK\r\n' but nothing longer
+        URC = self.sio.readlines(5)
+        self.ser.timeout = old_timeout
+
+        if URC == '':
+            warnings.warn('Timeout in waiting for URC', ModemWarning)
+        return URC
+
     def cmd_query(self, AT_commandline, timeout=None, wait=0.1, multiline=False):
-        """TODO"""
+        # Currently this is buggy with AT#HTTPRCV, due to delayed OK
+        """TODO
+
+        Write about the normal return
+        Write about custom return for AT#HTTPRCV
+        """
         # Set read timeout override
         if timeout:
             old_timeout = self.ser.timeout
@@ -260,6 +276,24 @@ class TelitME910G1(SixfabBaseHat):
         print("DEBUG serial buffer has", self.ser.in_waiting, "bytes in waiting")
         print("DEBUG BufferedRWPair buffer has", len(self.sio.buffer.peek()), "bytes in waiting")
         print("DEBUG the lines read are", response_lines)
+
+        # Custom parsing for HTTP responses
+        if AT_commandline.upper().startswith('AT#HTTPRCV'):
+            old_timeout = self.ser.timeout
+            self.ser.timeout = 0.5
+            # Check for '\r\nOK\r\n'
+            # hint is 5; will read '\r\n' and then '\r\nOK' making total size 6, which exceeds 5
+            result_code = ''.join(self.sio.readlines(5)).replace('\r\n', '')
+            self.ser.timeout = old_timeout
+            if result_code == "OK":
+                http_response = ''.join(response_lines)
+                # For some reason not working?
+                #http_response = http_response.removeprefix('\r\n>>>')
+                http_response = http_response[5:]
+                return http_response
+            elif "ERROR" in result_code:
+                raise ATCommandError(f'Command "{AT_commandline}" returned result code "{result_code}"')
+
         for line in response_lines:
             if line in {'\r\n', ''}:
                 response_lines.remove(line)
@@ -279,7 +313,7 @@ class TelitME910G1(SixfabBaseHat):
         #        break
 
         # Error checking
-        result_code = response_lines[-1]
+        result_code = response_lines.pop()
         if "OK" in result_code:
             pass
         elif "ERROR" in result_code:
@@ -302,11 +336,15 @@ class TelitME910G1(SixfabBaseHat):
             setattr(self.ser, "timeout", old_timeout)
 
         if multiline:
-            # Return each line except the result code
-            return response_lines[0:len(response_lines) - 1]
-        elif not multiline:
+            # Return each line except the result code, which was popped from
+            # the list earlier
+            return response_lines
+        elif not multiline and len(response_lines) != 0:
             return response_lines[0]
+        else:
+            return ''
 
+    # DEPRECATED
     def AT_query(self, AT_commandline, timeout=None, wait=0.1, silent=False):
         """Send an AT command and store the response.
 
