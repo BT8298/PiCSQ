@@ -99,6 +99,7 @@ while True:
         writer = csv.DictWriter(csvfile, csv_fields)
         writer.writerow(new_csv_row)
     # Using one-letter variable names minimize size of data being transmitted
+    # We set the last character of our device hostname to be a numeric identifier for the device
     json_data = json.dumps({"d": int(hostname[-1]), "t": t_degrees_c, "h": rh_percent, "p": p_hpa})
     # If the send interval is low enough (ballpark 5 seconds), I would
     # recommend keeping the serial device open instead of using the with
