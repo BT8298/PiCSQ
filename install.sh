@@ -5,6 +5,10 @@ if [ $UID != 0 ]; then
 	exit 1
 fi
 
+# GPIO 26, when driven high, prevents modem from powering up.
+# This is desired; modem will be turned on via the python script.
+grep -qxF 'gpio=26=op,dh' /boot/firmware/config.txt || echo 'gpio=26,op,dh' >> /boot/firmware/config.txt
+
 install -o root -g root -m 644 smartpark.service /etc/systemd/system
 # This path is seemingly raspbian-specific; it differs for example in arch linux, where it is /lib/python3.11/site-packages
 install -o root -g root -m 644 modules/*.py /lib/python3/dist-packages/

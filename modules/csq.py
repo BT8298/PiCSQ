@@ -100,7 +100,12 @@ class TelitME910G1(SixfabBaseHat):
         The last modem found is initialized (we assume there is only one modem
         connected at a time).
         """
+
         super().__init__()
+        self.power = True
+        # Give one second for device to be recognized by kernel
+        # Perhaps implement a better detection method
+        time.sleep(3)
         for port in serial.tools.list_ports.comports():
             # Check if 0x110a is the actual product ID of the device
             # For some reason, ttyUSB2 is the "good" port
@@ -259,8 +264,10 @@ class TelitME910G1(SixfabBaseHat):
         time.sleep(0.02)
         self.sio.write(AT_commandline+"\r")
 
+        self.led = True
         while self.ser.in_waiting == 0:
             time.sleep(wait)
+        self.led = False
 
         response_lines = []
         # TextIOWrapper.readline consumes up to io.DEFAULT_BUFFER_SIZE bytes
@@ -573,8 +580,10 @@ class TelitME910G1(SixfabBaseHat):
         self.sio.write(HTTP_AT_command+"\r")
 
         # Sometimes the modem just disconnects the USB link (kernel says GSM modem disconnected) and then reconnects
+        self.led = True
         while self.ser.in_waiting == 0:
             time.sleep(0.1)
+        self.led = False
 
         try:
             # Should be "\r\n>>>"
@@ -590,8 +599,10 @@ class TelitME910G1(SixfabBaseHat):
             self.sio.write(data)
             self.sio.flush()
 
+            self.led = True
             while self.ser.in_waiting == 0:
                 time.sleep(wait)
+            self.led = False
             # Check for <CR><LF>OK<CR><LF>
             result_code = self.sio.readlines(5)
             print("DEBUG result code after AT#HTTPSND is", result_code)
