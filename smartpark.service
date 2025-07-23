@@ -5,9 +5,9 @@ Conflicts=ModemManager.service
 [Service]
 Type=exec
 Environment=PYTHONUNBUFFERED=1
-# Check for USB device with Telit's vendor ID
-ExecStartPre=lsusb -d 1bc7:
 ExecStart=/usr/bin/smartpark_data_logger
+# May have to replace if using different modem
+ExecStop=bash -c 'printf "at#shdn\r" /dev/serial/by-id/usb-Telit_Telit_ME910_88fd344e-if02-port0 && sleep 3 && gpioset gpiochip0 26=1'
 Restart=on-failure
 RestartSec=5s
 

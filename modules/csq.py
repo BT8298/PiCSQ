@@ -15,16 +15,16 @@ import RPi.GPIO as rgp
 
 
 class SixfabBaseHat:
-    """Interface to GPIO features of the board."""
+    """Interface to GPIO features of the Sixfab 3G/4G Base HAT."""
 
     def __init__(self):
-        rgp.setmode(rgp.BOARD)
-        # LED line
-        rgp.setup(13, rgp.OUT, initial=rgp.LOW)
-        # Airplane mode
-        rgp.setup(35, rgp.OUT, initial=rgp.LOW)
-        # Board poweroff
-        rgp.setup(37, rgp.OUT, initial=rgp.LOW)
+        rgp.setmode(rgp.BCM)
+        # User LED initially off
+        rgp.setup(27, rgp.OUT, initial=rgp.LOW)
+        # Airplane mode initially off
+        rgp.setup(19, rgp.OUT, initial=rgp.LOW)
+        # Power to HAT; keep same state as before (low is on, high is cut off)
+        rgp.setup(26, rgp.OUT, initial=None)
 
     @property
     def led(self):
@@ -33,20 +33,22 @@ class SixfabBaseHat:
     @led.setter
     def led(self, state):
         if state in {1, True, "on"}:
-            rgp.output(13, rgp.HIGH)
+            #rgp.output(13, rgp.HIGH)
+            rgp.output(27, rgp.HIGH)
         elif state in {0, False, "off"}:
-            rgp.output(13, rgp.LOW)
+            #rgp.output(13, rgp.LOW)
+            rgp.output(27, rgp.LOW)
 
     @property
     def airplane_mode(self):
-        return True if rgp.input(35) == 1 else False
+        return True if rgp.input(19) == 1 else False
 
     @airplane_mode.setter
     def airplane_mode(self, state):
         if state in {1, True, "on"}:
-            rgp.output(35, rgp.HIGH)
+            rgp.output(19, rgp.HIGH)
         elif state in {0, False, "off"}:
-            rgp.output(35, rgp.LOW)
+            rgp.output(19, rgp.LOW)
 
     @property
     def power(self):
@@ -54,14 +56,14 @@ class SixfabBaseHat:
 
         True if the HAT is powered; False if not.
         """
-        return False if rgp.input(37) == 1 else True
+        return False if rgp.input(26) == 1 else True
 
     @power.setter
     def power(self, state):
         if state in {1, True, "on"}:
-            rgp.output(37, rgp.LOW)
+            rgp.output(26, rgp.LOW)
         elif state in {0, False, "off"}:
-            rgp.output(37, rgp.HIGH)
+            rgp.output(26, rgp.HIGH)
 
 
 class ModemError(RuntimeError):
@@ -75,11 +77,12 @@ class ATCommandError(ModemError):
 
 
 class ModemWarning(RuntimeWarning):
+    """A warning related to modem communication."""
     pass
 
 
 class ATCommandWarning(RuntimeWarning):
-    """Warning related to the result of an AT command.
+    """A warning related to the result of an AT command.
 
     For example, this is used to notify the user when the GNSS position
     acquisition command succesfully executes, but returns no coordinates (did
@@ -103,9 +106,11 @@ class TelitME910G1(SixfabBaseHat):
 
         super().__init__()
         self.power = True
-        # Give one second for device to be recognized by kernel
-        # Perhaps implement a better detection method
-        time.sleep(3)
+        # To turn on ME910G1, a certain pad must be tied low for at least 5
+        # seconds, then released. Refer to Telit ME910G1 Hardware Design Guide
+        # document.
+        print("DEBUG waiting 5 seconds for module power-on")
+        time.sleep(5)
         for port in serial.tools.list_ports.comports():
             # Check if 0x110a is the actual product ID of the device
             # For some reason, ttyUSB2 is the "good" port
@@ -126,14 +131,14 @@ class TelitME910G1(SixfabBaseHat):
 
         self.sio = io.TextIOWrapper(io.BufferedRWPair(self.ser, self.ser), newline="", line_buffering=True)
 
+        # At initial startup, the modem hangs waiting when trying to get
+        # response to these. Wait 3 seconds as a lazy workaround.
+        time.sleep(3)
         with self.ser:
             self.cmd_query("ATE0Q0V1X0&S3&K3")
             self.cmd_query("AT+IFC=2,2;+CMEE=2")
         # This will not run again if the modem is powered off via the parent
         # class!
-
-    # The write and query functions do not actually "open" the serial device.
-    # This logic needs to be implemented in routines which use these methods.
 
     def parse_gpsacp(self, AT_response):
         """Parse the results of AT$GPSACP."""
@@ -208,7 +213,12 @@ class TelitME910G1(SixfabBaseHat):
             "Network survey ended" lines.
 
         Returns:
-            A tuple of cell info results, with each result being a dictionary having keys "EARFCN", "MCC", "MNC", "ACT", "PCI", "TAC", "ECI". These are (respectively) the Evolved Absolute Radio Frequency Number, Mobile Country Code, Mobile Network Code, Access Technology (one of NB-IoT or LTE-M), Physical Cell Identifier, Tracking Area Code, and E-UTRAN Cell Identifier.
+            A tuple of cell info results, with each result being a dictionary
+            having keys "EARFCN", "MCC", "MNC", "ACT", "PCI", "TAC", "ECI".
+            These are (respectively) the Evolved Absolute Radio Frequency
+            Number, Mobile Country Code, Mobile Network Code, Access Technology
+            (one of NB-IoT or LTE-M), Physical Cell Identifier, Tracking Area
+            Code, and E-UTRAN Cell Identifier.
         """
         # Strip network survey started and ended lines
         AT_response_lines = AT_response_lines[1:len(AT_response_lines) - 1]
@@ -247,10 +257,27 @@ class TelitME910G1(SixfabBaseHat):
         return URC
 
     def cmd_query(self, AT_commandline, timeout=None, wait=0.1, multiline=False):
+        # This method assumes the serial device is already opened via serial.Serial.open() method.
         # Currently this is buggy with AT#HTTPRCV, due to delayed OK
-        """TODO
+        """Send an AT command, and receive a response.
 
-        Write about the normal return
+        Args:
+            AT_commandline (str): The AT commandline to send to the modem,
+                without carriage return. This can be more than one command, for
+                example, AT+CREG=1;+COPS=0.
+            timeout (float): Temporary override for the serial device timeout,
+                in seconds. Default None.
+            wait (float): How long to wait, in seconds, until checking the
+                serial buffer for new bytes when expecting a response. Default
+                0.1.
+            multiline (bool): Whether the response will contain multiple lines
+                (excluding result codes). If True, the return type will be an
+                array of lines. Default False.
+
+        Returns: Either a string containing the data response (if no data, it
+            is the empty string) or an array of strings representing a line in
+            the response, if multiline was True.
+
         Write about custom return for AT#HTTPRCV
         """
         # Set read timeout override
@@ -264,19 +291,13 @@ class TelitME910G1(SixfabBaseHat):
         time.sleep(0.02)
         self.sio.write(AT_commandline+"\r")
 
+        # User LED indicates waiting for AT response
         self.led = True
         while self.ser.in_waiting == 0:
             time.sleep(wait)
         self.led = False
 
         response_lines = []
-        # TextIOWrapper.readline consumes up to io.DEFAULT_BUFFER_SIZE bytes
-        # from the serial buffer, so checking serial.Serial.in_waiting is not
-        # reliable after a single call to readline.
-        # Instead, check the BufferedReader's buffer without actually emptying
-        # it via io.BufferedReader.peek to see if there is anything left there.
-        # IT SEEMS THAT THE BufferedReader's BUFFER IS ALSO COMPLETELY EMPTIED UPON A SINGLE readline()
-        # Also io.DEFAULT_BUFFER_SIZE appears to be 8192 on Raspbian.
         print("DEBUG serial buffer has", self.ser.in_waiting, "bytes in waiting")
         response_lines = self.sio.readlines()
         print("DEBUG read all lines in serial buffer")
@@ -305,19 +326,11 @@ class TelitME910G1(SixfabBaseHat):
             if line in {'\r\n', ''}:
                 response_lines.remove(line)
         # I tried doing this in a single for loop, and did not get desired
-        # result
+        # result.
         for line in response_lines:
             if '\r\n' in line:
                 response_lines[response_lines.index(line)] = line.strip('\r\n')
         print("DEBUG processed response lines is now", response_lines)
-        #while len(self.sio.buffer.peek()) != 0:
-        #    incoming_line = self.sio.readline()
-        #    print("DEBUG read new line:", incoming_line.replace('\r\n', '\\r\\n'))
-        #    print("DEBUG TextIOWrapper buffer now has", len(self.sio.buffer.peek()), "bytes in waiting")
-        #    if incoming_line not in {'\r\n', ''}:
-        #        response_lines.append(incoming_line.strip('\r\n'))
-        #    elif incoming_line == '':
-        #        break
 
         # Error checking
         result_code = response_lines.pop()
@@ -329,9 +342,9 @@ class TelitME910G1(SixfabBaseHat):
         # closed Also, AT#SGACTCFGEXT has an option to enable sending 1 byte
         # before AT#SGACT=n,1 completes, to abort PDP context activation. NO
         # CARRIER is sent as confirmation.
-        #elif "NO CARRIER" in result_code:
-        #    raise ATCommandError(f'Command ')
-        ## I don't think I've ever seen this one
+        elif "NO CARRIER" in result_code:
+            raise ATCommandError(f'Command "{AT_commandline}" returned "NO CARRIER"')
+        # I don't think I've ever seen this one
         #elif "CONNECT" in result_code:
         #    pass
         else:
@@ -343,114 +356,18 @@ class TelitME910G1(SixfabBaseHat):
             setattr(self.ser, "timeout", old_timeout)
 
         if multiline:
-            # Return each line except the result code, which was popped from
-            # the list earlier
             return response_lines
         elif not multiline and len(response_lines) != 0:
             return response_lines[0]
         else:
             return ''
 
-    # DEPRECATED
-    def AT_query(self, AT_commandline, timeout=None, wait=0.1, silent=False):
-        """Send an AT command and store the response.
-
-        This method assumes the modem is using verbose result codes, those set
-        by the command "ATV1". As an example, sending the command
-        AT+CCLK?<CR>
-        should result in a response similar to
-        <CR><LF>+CCLK: "70/01/01,12:00:00"<CR><LF><CR><LF>OK<CR><LF>
-        Visually, this may appear in a terminal as
-        --------------------------
-        AT+CCLK? (enter)
-        +CCLK: "70/01/01,12:00:00"
-
-        OK
-
-        --------------------------
-        Furthermore, at this moment there is no logic implemented to parse
-        several information results, as may be the case of a commandline with
-        more than one command.
-
-        Args:
-            AT_commandline (str): the AT commandline to send, with no carriage
-                return or linebreak. Note that many commands require a SIM to
-                be present.
-            timeout (float): Temporary override for serial read timeout, in
-                seconds.
-            wait (float): Duration of the time to wait between checking for
-                received data, in seconds.
-            silent (bool): Whether to return the result, or return None.
-
-        Returns: A string containing the modem's response, with OK, carriage
-            returns, and line feeds stripped. Or, if no data is returned (other
-            than an OK), returns None. If the AT command was AT#CSURV, then the
-            response is a list of operators found by the scan, and if none were
-            found, returns None.
-        """
-        # Set timeout override
-        if timeout:
-            old_timeout = self.ser.timeout
-            setattr(self.ser, "timeout", timeout)
-        # Clear input buffer
-        if self.ser.in_waiting != 0:
-            self.ser.reset_input_buffer()
-        # Telit recommends waiting 20ms before issuing subsequent command
-        time.sleep(0.02)
-        self.ser.write((AT_commandline+"\r").encode("ascii"))
-        # wait for response, if it takes long; for example, AT+COPS=?
-        while self.ser.in_waiting == 0:
-            time.sleep(wait)
-        # need response to be mutable
-        response = bytearray()
-        while self.ser.in_waiting != 0:
-                response.extend(self.ser.read(1))
-        # Restore original timeout
-        if timeout:
-            setattr(self.ser, "timeout", old_timeout)
-
-        response = response.decode("ascii")
-
-        # Handle a single information response and result code
-        # Designed for only a single data response; do not chain AT commands
-        # that have more than one information response in a single line
-        if "#CSURV" in AT_commandline.upper():
-            result, result_code = self.parse_csurv(response)
-        elif "\r\n\r\n" in response:
-            result, placeholder, result_code = response.rpartition("\r\n\r\n")
-            parts = [i for i in map(str.strip, response.rpartition("\r\n\r\n"),
-                                    ("\r\n",) * 3)]
-            result = parts[0]
-            result_code = parts[2]
-        # Handle response that is only "OK" or contains "ERROR"
-        elif "\r\n" in response:
-            result = None
-            result_code = response.strip("\r\n")
-
-        if "OK" in result_code:
-            pass
-        elif "ERROR" in result_code:
-            raise ATCommandError(f'Command "{AT_commandline}" returned "{result_code}"')
-        # NO CARRIER appears to be used by Telit to signal when a socket is
-        # closed Also, AT#SGACTCFGEXT has an option to enable sending 1 byte
-        # before AT#SGACT=n,1 completes, to abort PDP context activation. NO
-        # CARRIER is sent as confirmation.
-        #elif "NO CARRIER" in result_code:
-        #    raise ATCommandError(f'Command ')
-        ## I don't think I've ever seen this one
-        #elif "CONNECT" in result_code:
-        #    pass
-        else:
-            raise ModemError('Modem did not send result code to command "{AT_commandline}", or there was an error reading it (a timeout?)')
-
-        if result and not silent:
-            return result
-        # if the command only returns "OK" and no other information, do not
-        # return anything.
-        else:
-            return
-
     def one_time_setup(self):
+        """One-time configuration.
+
+        This method sets various parameters in the modem and saves them to
+        non-volatile memory.
+        """
         # These settings need to be saved into a profile via AT&W
         # Command Echo Off: E0
         # Execution Result Messages (e.g. "OK"): Q0
@@ -462,11 +379,11 @@ class TelitME910G1(SixfabBaseHat):
         # Use CME ERROR messages: +CMEE=2
         # Automatically update real time clock via network: AT+CTZU=1
         # Save to profile 0: AT&W0
-        self.cmd_query("ATE0Q0V1X0&S3&K3+IFC=2,2;+CMEE=2;+CTZU=1;&W0", silent=True)
+        self.cmd_query("ATE0Q0V1X0&S3&K3+IFC=2,2;+CMEE=2;+CTZU=1;&W0")
 
         # These settings are automatically saved to the non-volatile memory
         # Two USB interfaces for AT commands: AT#PORTCFG=8
-        # USB modem ports, 1 diag port, 1 WWAN adapter (no data traffic): AT#USBCFG=0
+        # USB modem ports, 1 diag, 1 WWAN (no data traffic): AT#USBCFG=0
         # Set DTR manually or raise on incoming bytes: AT#DTR=2
         # Prefer LTE-M over NB-IoT: AT#WS46=2
         # Disable NB2 mode: AT#NB2ENA=0
@@ -475,26 +392,26 @@ class TelitME910G1(SixfabBaseHat):
         # Configure PDP context APN: AT+CGDCONT=1,IP,soracom.io,"",1,1
         # Configure PDP context authentication: AT+CGAUTH=1,2,sora,sora
         self.cmd_query("AT#PORTCFG=8;"
-                      "#USBCFG=0;"
-                      "#DTR=2;"
-                      "#WS46=2;"
-                      "#NB2ENA=0;"
-                      "#BND=5,0,252582047,0,1048578;"
-                      "#CCLKMODE=1;"
-                      '+CGDCONT=1,IP,soracom.io,"",1,1;'
-                      "+CGAUTH=1,2,sora,sora",
-                      silent=True)
+                       "#USBCFG=0;"
+                       "#DTR=2;"
+                       "#WS46=2;"
+                       "#NB2ENA=0;"
+                       "#BND=5,0,252582047,0,1048578;"
+                       "#CCLKMODE=1;"
+                       '+CGDCONT=1,IP,soracom.io,"",1,1;'
+                       "+CGAUTH=1,2,sora,sora",
+                       )
 
         # These commands have a custom way of saving to NVM.
         # Auto select GNSS constellation depending on MCC: AT$GPSCFG=2,0
         # Prioritize WWAN over GNSS at runtime: AT$GPSCFG=3,1
-        # GNSS power on: AT$GPSP=1
+        # GNSS power off: AT$GPSP=0
         # Save GNSS settings in NVM: AT$GPSSAV
         self.cmd_query("AT$GPSCFG=2,0;"
-                      "$GPSCFG=3,1;"
-                      "$GPSP=1;"
-                      "$GPSSAV",
-                      silent=True)
+                       "$GPSCFG=3,1;"
+                       "$GPSP=0;"
+                       "$GPSSAV",
+                       )
 
     # Maybe ECM mode is better...
     def http_setup(self, server_address, http_prof_id=0, server_port=80,
@@ -506,8 +423,8 @@ class TelitME910G1(SixfabBaseHat):
         Args:
             server_address (str): The IP address or domain name of the remote
                 server to connect to.
-            prof_id (int|str): The numeric profile identifier (0 to 2) to save
-                this context to; default 0.
+            http_prof_id (int|str): The numeric profile identifier (0 to 2) to
+                save this context to; default 0.
             server_port (int|str): The listening port of the remote server;
                 default 80.
             pkt_size (int|str): Unsure of what this is, but ranges from 1 to
@@ -517,16 +434,16 @@ class TelitME910G1(SixfabBaseHat):
                 maximum number) to use for this HTTP context; default 1.
         """
         self.cmd_query(f"AT#HTTPCFG="
-                      f"{http_prof_id},"
-                      f"{server_address},"
-                      f"{server_port},"
-                      # No HTTP authentication, username, password, or SSL.
+                       f"{http_prof_id},"
+                       f"{server_address},"
+                       f"{server_port},"
+                       # No HTTP authentication, username, password, or SSL.
                        '0,"","",0,'
-                      f"{http_response_timeout},"
-                      f"{pdp_cid},"
-                      f"{pkt_size},"
+                       f"{http_response_timeout},"
+                       f"{pdp_cid},"
+                       f"{pkt_size},"
                        "0,0",
-                      )
+                       )
 
     def http_send(self, resource, data, http_prof_id=0, request_type="POST", post_param=1, wait=0.1):
         """Send an HTTP request to a remote endpoint.
@@ -569,7 +486,7 @@ class TelitME910G1(SixfabBaseHat):
                               f"{len(data)}," \
                               f"{post_param}"
 
-        print("DEBUG HTTP_AT_command is", HTTP_AT_command)
+        print("DEBUG about to send:", HTTP_AT_command)
 
         # Just like self.cmd_query, the serial device needs to be opened by
         # a higher level piece of code
@@ -579,7 +496,6 @@ class TelitME910G1(SixfabBaseHat):
         time.sleep(0.05)
         self.sio.write(HTTP_AT_command+"\r")
 
-        # Sometimes the modem just disconnects the USB link (kernel says GSM modem disconnected) and then reconnects
         self.led = True
         while self.ser.in_waiting == 0:
             time.sleep(0.1)
@@ -589,7 +505,7 @@ class TelitME910G1(SixfabBaseHat):
             # Should be "\r\n>>>"
             ready_for_data_entry = self.sio.read(5)
         except serial.SerialException:
-            raise serial.SerialException("Failed to read from serial input buffer")
+            raise serial.SerialException("Failed to read from serial input buffer; expected \">>>\" (ready for data entry for HTTP request)")
 
         print("DEBUG ready_for_data_entry is", "'" + ready_for_data_entry.replace('\r\n', '\\r\\n') + "'")
 
@@ -731,24 +647,6 @@ class TelitME910G1(SixfabBaseHat):
                         cops_act_human_readable = "NB-IoT"
                 print(f"Selected operator is {cops_oper} on mode {cops_act_human_readable}")
 
-    #def register(self, plmn, act="CAT M-1"):
-    #    """Attempt to register on a cellular network.
-
-    #    Args:
-    #        plmn (int): The operator's Mobile Country Code followed by the
-    #            Mobile Network code; the Public Land Mobile Network (PLMN)
-    #            number.
-    #        act (str): The access technology of the network. Either "CAT M-1"
-    #            for LTE CAT M-1, or "NBIoT" for NBIoT.
-    #    """
-    #    with self.ser:
-    #        if act.upper() in {"LTE CAT M-1", "LTE CAT M1", "CAT M-1", "CAT M1", "LTE-M", "LTE M"}:
-    #            act = 8
-    #        elif act.upper() in {"NBIOT", "NB-IOT", "NB IOT"}:
-    #            act = 9
-
-    #        self.AT_query(f"AT+COPS=1,2,{plmn},{act}")
-
     def signal_test(self):
         """Get signal quality statistics.
 
@@ -761,8 +659,6 @@ class TelitME910G1(SixfabBaseHat):
             # Check if modem is registered on a network
             if self.cmd_query("AT+COPS?").count(",") != 0:
                 sstats = rfsts.replace("#RFSTS: ", "").split(sep=",")
-                # "imsi" key is the International Mobile Station Identity, not to be
-                # confused with subscriber identity.
                 return {"plmn": sstats[0].strip('"'), "earfcn": sstats[1], "rsrp": sstats[2],
                         "rssi": sstats[3], "rsrq": sstats[4], "tac": sstats[5],
                         "rac": sstats[6], "cellid": sstats[11], "imsi": sstats[12].strip('"'),
@@ -770,68 +666,3 @@ class TelitME910G1(SixfabBaseHat):
                         sstats[18]}
             else:
                 warnings.warn("Modem is not registered on a network", RuntimeWarning)
-
-        #m = re.match(r"\+CSQ:\s*([0-9]+),", csq)
-        #if m:
-        #    rssi_code = int(m.group(1))         # e.g. 23
-        #    # per typical Telit formula: dBm = –113 + 2 × RSSI_code
-        #    rssi_dbm = -113 + (2 * rssi_code)   # e.g. –113 + 46 = –67 dBm
-        #else:
-        #    rssi_code = None
-        #    rssi_dbm = None
-
-        #print(f"Parsed RSSI: code={rssi_code}, approx {rssi_dbm} dBm")
-
-        #return {"rssi": rssi_dbm, "rssi_raw": rssi_code}
-
-    def diagnostic_test(self, display_result=False):
-        """Acquire various LTE parameters and optionally print to stdout.
-
-        Args:
-            display_result (bool): Whether to print the results in a
-                human-readable format.
-
-        Returns: Dictionary with keys the name of the command sent. The
-            available keys are "WS46", "GPSP", "COPS", and "CSQ".
-        """
-        self.ser.open()
-        # Data Terminal Ready signal needs to be present for modem to work.
-        # Per the documentation, this seems to be handled by the open method.
-        # self.ser.dtr = 1
-
-        # Check which LTE technology the modem is using.
-        # Updates to this value take effect after reboot.
-        print("Identifying current technology selection...")
-        ws46_response = self.cmd_query("AT#WS46?")
-
-        print("Checking GPS module status...")
-        gpsp_response = self.cmd_query("AT$GPSP?")
-
-        # Longer timeout due to network scan operation taking time
-        print("Searching for available operators...")
-        cops_response = self.cmd_query("AT+COPS=?", timeout=60)
-
-        # This requires a connection to be established
-        #print("Getting signal quality statistics...")
-        #csq_response = self.AT_query("AT+CSQ")
-
-        # MAYBE ADD???
-        # Below code parses out the rssi_code from csq_response
-        # Double check on the specific conversion formula (this one is typical for Telit products), info should be in the user manual once we unpackage it
-        # We may want to edit the function to also return this dBm value, as it is the best marker of signal strength (which is the main purpose of the script from what I can tell)
-
-
-        # raw = csq_response[-1]                  # e.g. "+CSQ: 23,99"
-        # m = re.match(r"\+CSQ:\s*([0-9]+),", raw)
-        # if m:
-        #     rssi_code = int(m.group(1))         # e.g. 23
-        #     # per typical Telit formula: dBm = –113 + 2 × RSSI_code
-        #     rssi_dbm = -113 + (2 * rssi_code)   # e.g. –113 + 46 = –67 dBm
-        # else:
-        #     rssi_code = None
-        #     rssi_dbm = None
-
-        # print(f"Parsed RSSI: code={rssi_code}, approx {rssi_dbm} dBm")
-
-        # self.ser.dtr = 0
-        self.ser.close()

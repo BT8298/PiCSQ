@@ -13,15 +13,18 @@ import warnings
 import csq
 import sensors
 
-# Logging is done via printing to standard out, which is then caught by systemd-journald.
+# Logging is done via printing to standard out, which is then caught by
+# systemd-journald.
 
 # Configuration
 # Time in seconds between uploads
 data_acquisition_interval = 15
-# How long to wait in seconds before sending data again after getting an HTTP response other than OK (201)
+# How long to wait in seconds before sending data again after getting an HTTP
+# response other than OK (201)
 break_time = 60
 unix_username = "PUT UNIX USERNAME HERE"
-# Cannot use ~ expansion due to systemd not initializing HOME environment variable
+# Cannot use ~ expansion due to systemd not initializing HOME environment
+# variable
 csv_file_path = os.path.join(pwd.getpwnam(unix_username).pw_dir, "sensor_reading_history.csv")
 # Either a domain name or IP address
 website_address = "PUT_ADDRESS_HERE"
@@ -131,7 +134,6 @@ while True:
         if http_response_metadata[2] == '':
             http_response_metadata[2] = '(not present)'
         print(f'Received HTTP response on profile {http_response_metadata[0]}, status {http_response_metadata[1]}, content type {http_response_metadata[2]}, {http_response_metadata[3]} bytes')
-        # TODO: implement status code checking and stop sending if not status OK
         if http_response_metadata[1] != '201':
             print('HTTP response status is not OK (201); taking a break')
             time.sleep(break_time)

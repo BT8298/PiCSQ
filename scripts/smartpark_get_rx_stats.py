@@ -1,16 +1,10 @@
 #!/usr/bin/python
 import warnings
 import os
-import sys
-import getopt
 import argparse
 import time
-import datetime
-#import re
 import csv
 import csq
-
-# This script collects information from the modem and GNSS receiver into a CSV file.
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-g", action="store_true", help="Attempt to get a GPS fix")
