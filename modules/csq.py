@@ -234,7 +234,7 @@ class TelitME910G1(SixfabBaseHat):
         old_timeout = self.ser.timeout
         self.ser.timeout = timeout
         # hint is 5 so that it can capture '\r\nOK\r\n' but nothing longer
-        URC = self.sio.readlines(5)
+        URC = self.sio.readlines(5)[1].strip('\r\n')
         self.ser.timeout = old_timeout
 
         if URC == '':
@@ -519,10 +519,9 @@ class TelitME910G1(SixfabBaseHat):
                       f"{pdp_cid},"
                       f"{pkt_size},"
                        "0,0",
-                      silent=True
                       )
 
-    def http_send(self, resource, data, http_prof_id=0, request_type="POST", post_param=1):
+    def http_send(self, resource, data, http_prof_id=0, request_type="POST", post_param=1, wait=0.1):
         """Send an HTTP request to a remote endpoint.
 
         Args:
@@ -538,6 +537,7 @@ class TelitME910G1(SixfabBaseHat):
             request_type (str): Either "POST" or "PUT".
             post_param (str): The HTTP Content-type; defaults to
             "application/x-www-form-urlencoded". Only use with POST requests.
+            wait (float):
 
         """
         match request_type.upper():
@@ -562,55 +562,43 @@ class TelitME910G1(SixfabBaseHat):
                               f"{len(data)}," \
                               f"{post_param}"
 
+        print("DEBUG HTTP_AT_command is", HTTP_AT_command)
+
         # Just like self.cmd_query, the serial device needs to be opened by
         # a higher level piece of code
         if self.ser.in_waiting != 0:
             self.ser.reset_input_buffer()
+
         time.sleep(0.05)
-        self.ser.write((HTTP_AT_command+"\r").encode("ascii"))
+        self.sio.write(HTTP_AT_command+"\r")
+
+        # Sometimes the modem just disconnects the USB link (kernel says GSM modem disconnected) and then reconnects
         while self.ser.in_waiting == 0:
             time.sleep(0.1)
-        ready_for_data_entry = bytearray()
-        while self.ser.in_waiting != 0:
-            try:
-                ready_for_data_entry.extend(self.ser.read(1))
-            except serial.SerialException:
-                raise RuntimeError("Failed to read from serial input buffer")
-        print("DEBUG ready_for_data_entry is", ready_for_data_entry)
-        if ready_for_data_entry.decode("ascii") != "\r\n>>>":
-            raise RuntimeError(f"Modem returned error: {ready_for_data_entry}")
+
+        try:
+            # Should be "\r\n>>>"
+            ready_for_data_entry = self.sio.read(5)
+        except serial.SerialException:
+            raise serial.SerialException("Failed to read from serial input buffer")
+
+        print("DEBUG ready_for_data_entry is", "'" + ready_for_data_entry.replace('\r\n', '\\r\\n') + "'")
+
+        if ready_for_data_entry != "\r\n>>>":
+            raise ModemError(f"Modem returned {ready_for_data_entry} when \"\\r\\n>>>\" was expected")
         else:
-            self.ser.write(data.encode("ascii"))
+            self.sio.write(data)
+            self.sio.flush()
+
             while self.ser.in_waiting == 0:
-                time.sleep(0.1)
+                time.sleep(wait)
             # Check for <CR><LF>OK<CR><LF>
-            self.ser.read_until(b'\r\n')
-            response = self.ser.read_until(b'\r\n').decode("ascii")
-            print("DEBUG immediate response after AT#HTTPSND is", response)
-            if "OK" not in response:
-                raise RuntimeError(f"Modem returned error after attempting to send HTTP data: {response}")
-            elif "OK" in response:
-                while self.ser.in_waiting == 0:
-                    time.sleep(0.1)
-                # Listen for #HTTPRING unsolicited result code
-                HTTP_ring = bytearray()
-                i = 1
-                while self.ser.in_waiting == 0 and i <= 150:
-                    time.sleep(0.1)
-                    i += 1
-                if i == 150:
-                    raise RuntimeError("Did not get AT#HTTPRING after 15 seconds")
-                while self.ser.in_waiting != 0:
-                    try:
-                        HTTP_ring.extend(self.ser.read(1))
-                    except serial.SerialException:
-                        raise RuntimeError("Failed to read from serial input buffer")
-                print("DEBUG HTTP_ring is", HTTP_ring)
-                HTTP_ring = HTTP_ring.decode("ascii")
-                if "#HTTPRING" in HTTP_ring:
-                    return
-                else:
-                    raise RuntimeError("#HTTPRING URC not detected")
+            result_code = self.sio.readlines(5)
+            print("DEBUG result code after AT#HTTPSND is", result_code)
+            if "OK\r\n" not in result_code:
+                raise ATCommandError(f"Modem returned error after attempting to send HTTP data: {result_code}")
+
+            return
 
     def self_test(self):
         """Check if the modem is responding to AT commands and more.

@@ -16,15 +16,19 @@ import sensors
 # Logging is done via printing to standard out, which is then caught by systemd-journald.
 
 # Configuration
+# Time in seconds between uploads
 data_acquisition_interval = 15
-unix_username = "wpi"
+# How long to wait in seconds before sending data again after getting an HTTP response other than OK (201)
+break_time = 60
+unix_username = "PUT UNIX USERNAME HERE"
 # Cannot use ~ expansion due to systemd not initializing HOME environment variable
 csv_file_path = os.path.join(pwd.getpwnam(unix_username).pw_dir, "sensor_reading_history.csv")
 # Either a domain name or IP address
 website_address = "PUT_ADDRESS_HERE"
 website_port = 80
 # The resource to send to on the HTTP server
-website_endpoint = "/api/sensordata"
+# For example, /api/sensordata
+website_endpoint = "PUT ENDPOINT HERE"
 
 SHTC3_sensor = sensors.SHTC3()
 LPS22HB_sensor = sensors.LPS22HB()
@@ -45,7 +49,13 @@ with modem.ser:
     cclk_response = modem.AT_query("AT+CCLK?").replace("+CCLK: ", "").strip('"')
     print(f"Received date and time from modem: {cclk_response}")
     modem.http_setup(server_address=website_address, server_port=website_port, pkt_size=100)
-    modem.AT_query("AT#SGACT=1,1")
+    try:
+        modem.AT_query("AT#SGACT=1,1")
+    except csq.ATCommandError as ex:
+        if "context already activated" in ex.args[0]:
+            print('Tried to activate PDP context 1, but it is already activated')
+        else:
+            raise ex
 
 year = int(cclk_response[0:2])
 month = int(cclk_response[3:5])
@@ -94,7 +104,7 @@ while True:
                     "Relative Humidity (%)": rh_percent,
                     "Pressure (hPa)": p_hpa
                   }
-    print(f"New sensor reading: T {t_degrees_c} RH {rh_percent} P {p_hpa}")
+    print(f"New sensor reading; T: {t_degrees_c} RH: {rh_percent} P: {p_hpa}")
     with open(csv_file_path, mode="a", newline="") as csvfile:
         writer = csv.DictWriter(csvfile, csv_fields)
         writer.writerow(new_csv_row)
@@ -107,6 +117,23 @@ while True:
     with modem.ser:
         try:
             modem.http_send(resource=website_endpoint, data=json_data, post_param="application/json")
-        except csq.ATCommandError:
-            warnings.warn("Exception in HTTP request", csq.ATCommandError)
+            print(f'Sent HTTP request to {website_address + website_endpoint}; waiting for HTTP response')
+        except csq.serial.SerialException as ex:
+            warnings.warn(f"SerialException occured in sending HTTP request, with arguments {ex.args}")
+        except csq.ModemError as ex:
+            warnings.warn(f"ModemError occured in sending HTTP request, with arguments {ex.args}")
+        except csq.ATCommandError as ex:
+            warnings.warn(f"ATCommandError occured in sending HTTP request, with arguments {ex.args}")
+
+        http_ring = modem.await_urc(timeout=15)
+        print(f'DEBUG got URC: {http_ring}')
+        http_response_metadata = http_ring.removeprefix('#HTTPRING: ').split(sep=',')
+        if http_response_metadata[2] == '':
+            http_response_metadata[2] = '(not present)'
+        print(f'Received HTTP response on profile {http_response_metadata[0]}, status {http_response_metadata[1]}, content type {http_response_metadata[2]}, {http_response_metadata[3]} bytes')
+        # TODO: implement status code checking and stop sending if not status OK
+        if http_response_metadata[1] != '201':
+            print('HTTP response status is not OK (201); taking a break')
+            time.sleep(break_time)
+
     time.sleep(data_acquisition_interval)
