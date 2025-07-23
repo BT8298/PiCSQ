@@ -5,7 +5,11 @@ Conflicts=ModemManager.service
 [Service]
 Type=exec
 Environment=PYTHONUNBUFFERED=1
+# Check for USB device with Telit's vendor ID
+ExecStartPre=lsusb -d 1bc7:
 ExecStart=/usr/bin/smartpark_data_logger
+Restart=on-failure
+RestartSec=5s
 
 [Install]
 WantedBy=multi-user.target
